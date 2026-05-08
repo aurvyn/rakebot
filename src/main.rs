@@ -1,6 +1,6 @@
 use serenity::all::{
-    Client, Context, CreateEmbed, CreateEmbedFooter, CreateMessage, EventHandler, GatewayIntents,
-    Message, Timestamp,
+    Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
+    EventHandler, GatewayIntents, Message, Timestamp,
     colours::roles::{DARK_GREEN, DARK_RED},
 };
 use serenity::async_trait;
@@ -59,20 +59,22 @@ impl EventHandler for Handler {
                 None => return,
             },
         };
-        let embed = match content.split_once(" ") {
+        let mut builder = CreateMessage::new();
+        builder = match content.split_once(" ") {
             Some((command, input)) => match command {
-                "say" | "say," => CreateEmbed::new()
+                "say" | "say," => builder.embed(CreateEmbed::new()
                     .title("Question")
                     .description(input)
                     .color(DARK_GREEN)
-                    .field("Answer", *RESPONSES.choice(input), true),
-                _ => CreateEmbed::new()
+                    .field("Answer", *RESPONSES.choice(input), true)),
+                "speak" => builder.content(input).allowed_mentions(CreateAllowedMentions::new()),
+                _ => builder.embed(CreateEmbed::new()
                     .title(format!("What's `{command}`?"))
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
-                    .color(DARK_RED)
+                    .color(DARK_RED))
             }
             None => match content {
-                "help" => CreateEmbed::new()
+                "help" => builder.embed(CreateEmbed::new()
                     .title("Commands")
                     .description("[Join our official server!](https://discord.gg/fwNnyndEM2)")
                     .color(DARK_GREEN)
@@ -84,17 +86,17 @@ impl EventHandler for Handler {
                         ("Music", "`play`, `leave`", false),
                         ("Admin", "`speak`, `settings`", false),
                     ])
-                    .footer(CreateEmbedFooter::new("yee haw").icon_url(ICON_URL)),
-                "ping" => CreateEmbed::new()
+                    .footer(CreateEmbedFooter::new("yee haw").icon_url(ICON_URL))),
+                "ping" => builder.embed(CreateEmbed::new()
                     .title("🏓 Pong!")
-                    .color(DARK_GREEN),
-                _ => CreateEmbed::new()
+                    .color(DARK_GREEN)
+                    .timestamp(Timestamp::now())),
+                _ => builder.embed(CreateEmbed::new()
                     .title("What?")
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
-                    .color(DARK_RED)
+                    .color(DARK_RED))
             }
-        }.timestamp(Timestamp::now());
-        let builder = CreateMessage::new().embed(embed);
+        };
         if let Err(why) = msg.channel_id.send_message(&ctx.http, builder).await {
             println!("Error sending message: {why:?}");
         }
