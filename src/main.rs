@@ -8,6 +8,44 @@ use serenity::model::gateway::Ready;
 use std::env;
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
+const RESPONSES: &[&str] = &[
+    "Yes",
+    "Maybe",
+    "No",
+    "You're dumb to ask that question",
+    "I think you already know the answer",
+    "`Error: Response Too Dumb`",
+    "Yup",
+    "Nay",
+    "I feel hurt hearing that...",
+    "Yes but actually no.",
+    "Why is that a question? The answer is obviously YES!",
+    "...so you're a Rake of culture as well!",
+    "POGGERS",
+    "That made me want to eat some wasabi out of an ice cream cone.",
+    "That's some bold question you're asking.",
+    "Yesn't",
+    "Will you be mad if I say no?",
+    "It's a tough question... hmm... I'll say yes.",
+    "Definitely!",
+    "Nahhh",
+];
+
+fn fnv1a_hash(s: &str) -> usize {
+    s.bytes().fold(0xcbf29ce484222325, |acc, b| {
+        acc ^ b as usize * 0x100000001b3
+    })
+}
+
+trait Choice<T> {
+    fn choice(&self, seed: &str) -> &T;
+}
+
+impl<T> Choice<T> for [T] {
+    fn choice(&self, seed: &str) -> &T {
+        &self[fnv1a_hash(seed) % self.len()]
+    }
+}
 
 struct Handler;
 
@@ -16,11 +54,25 @@ impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
         let content = match msg.content.strip_prefix("oi ") {
             Some(rest) => rest,
-            None => return,
+            None => match msg.content.strip_prefix("Oi ") {
+                Some(rest) => rest,
+                None => return,
+            },
         };
-        let embed = match content {
-            "help" => {
-                CreateEmbed::new()
+        let embed = match content.split_once(" ") {
+            Some((command, input)) => match command {
+                "say" | "say," => CreateEmbed::new()
+                    .title("Question")
+                    .description(input)
+                    .color(DARK_GREEN)
+                    .field("Answer", *RESPONSES.choice(input), true),
+                _ => CreateEmbed::new()
+                    .title(format!("What's `{command}`?"))
+                    .description("I can't quite understand what you're saying, maybe try `oi help`?")
+                    .color(DARK_RED)
+            }
+            None => match content {
+                "help" => CreateEmbed::new()
                     .title("Commands")
                     .description("[Join our official server!](https://discord.gg/fwNnyndEM2)")
                     .color(DARK_GREEN)
@@ -32,15 +84,11 @@ impl EventHandler for Handler {
                         ("Music", "`play`, `leave`", false),
                         ("Admin", "`speak`, `settings`", false),
                     ])
-                    .footer(CreateEmbedFooter::new("yee haw").icon_url(ICON_URL))
-            }
-            "ping" => {
-                CreateEmbed::new()
+                    .footer(CreateEmbedFooter::new("yee haw").icon_url(ICON_URL)),
+                "ping" => CreateEmbed::new()
                     .title("🏓 Pong!")
-                    .color(DARK_GREEN)
-            }
-            _ => {
-                CreateEmbed::new()
+                    .color(DARK_GREEN),
+                _ => CreateEmbed::new()
                     .title("What?")
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
                     .color(DARK_RED)
@@ -60,7 +108,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     // Configure the client with your Discord bot token in the environment.
-    let token = env::var("RAKE_TOKEN").expect("Expected a token in the environment");
+    let token = env::var("RAKE_TOKEN").expect("Expected Rake's token in the environment");
     // Set gateway intents, which decides what events the bot will be notified about
     let intents = GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::DIRECT_MESSAGES
