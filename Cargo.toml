@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rand = "0.10.1"
+rand = { version = "0.10.1", features = [ "thread_rng" ] }
 serenity = "0.12.5"
+sqlx = { version = "0.8.6", features = [ "sqlite" ] }
 tokio = { version = "1.52.2", features = ["rt-multi-thread"] }
