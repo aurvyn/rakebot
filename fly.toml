@@ -6,6 +6,10 @@
 app = 'rakebot'
 primary_region = 'iad'
 
+[mounts]
+  source = "data"
+  destination = "/data"
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'

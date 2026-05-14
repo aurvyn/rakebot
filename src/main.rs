@@ -7,7 +7,7 @@ use serenity::all::{
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
 use sqlx::{Connection, SqliteConnection};
-use std::env;
+use std::{env, fs::File};
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
 const RESPONSES: &[&str] = &[
@@ -32,12 +32,24 @@ const RESPONSES: &[&str] = &[
     "Definitely!",
     "Nahhh",
 ];
-enum Items {
+enum Item {
     LeafHandful,
     LeafPile,
     LeafBucket,
     LeafBarrel,
     LeafTruckload,
+}
+
+impl Item {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Item::LeafHandful => "Handful of Leaves",
+            Item::LeafPile => "Pile of Leaves",
+            Item::LeafBucket => "Bucket of Leaves",
+            Item::LeafBarrel => "Barrel of Leaves",
+            Item::LeafTruckload => "Truckload of Leaves",
+        }
+    }
 }
 
 async fn try_create_tables(conn: &mut SqliteConnection) {
@@ -96,17 +108,24 @@ async fn get_last_raked(user_id: i64, conn: &mut SqliteConnection) -> i64 {
         .0
 }
 
-async fn update_raking(user_id: i64, exp: u32, leaves: u32, conn: &mut SqliteConnection) {
-    sqlx::query("UPDATE user SET exp = exp + ?, leaves = leaves + ? WHERE id = ?")
+async fn update_raking(
+    user_id: i64,
+    exp: i32,
+    leaves: i32,
+    last_raked: i64,
+    conn: &mut SqliteConnection,
+) {
+    sqlx::query("UPDATE user SET exp = exp + ?, leaves = leaves + ?, last_raked = ? WHERE id = ?")
         .bind(exp)
         .bind(leaves)
+        .bind(last_raked)
         .bind(user_id)
         .execute(conn)
         .await
         .unwrap();
 }
 
-async fn add_item(user_id: i64, item_id: u32, conn: &mut SqliteConnection) {
+async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
     sqlx::query("INSERT OR IGNORE INTO inventory (user_id, item_id, quantity) VALUES (?, ?, 0)")
         .bind(user_id)
         .bind(item_id)
@@ -188,26 +207,27 @@ impl EventHandler for Handler {
                     let user_id = msg.author.id.get() as i64;
                     try_register(user_id, &mut conn).await;
                     let last_raked = get_last_raked(user_id, &mut conn).await;
-                    if last_raked + 30 > msg.timestamp.unix_timestamp() {
+                    let current_time = msg.timestamp.unix_timestamp();
+                    if last_raked + 30 > current_time {
                         builder.content(format!("Your rake is on cooldown, please wait **{}** more seconds.", 30 - (msg.timestamp.unix_timestamp() - last_raked)))
                     } else {
                         let exp = random_range(5..10);
                         let leaves = random_range(1..4);
-                        update_raking(user_id, exp, leaves, &mut conn).await;
+                        update_raking(user_id, exp, leaves, current_time, &mut conn).await;
                         let mut embed = CreateEmbed::new()
                             .title("You raked with `bare hands`.") // change later
                             .description(format!("`+{exp} exp`\n`+{leaves} leaves`"))
                             .color(DARK_GREEN);
-                        if let Some((gift, item)) = match random_range(0..10000) {
-                            q if q < 500 => Some(("Handful of Leaves", Items::LeafHandful)), // 5%
-                            q if q < 600 => Some(("Pile of Leaves", Items::LeafPile)), // 1%
-                            q if q < 625 => Some(("Bucket of Leaves", Items::LeafBucket)), // .25%
-                            q if q < 630 => Some(("Barrel of Leaves", Items::LeafBarrel)), // .05%
-                            q if q < 631 => Some(("Truckload of Leaves", Items::LeafTruckload)), // .01%
+                        if let Some(item) = match random_range(0..10000) {
+                            q if q < 500 => Some(Item::LeafHandful), // 5%
+                            q if q < 600 => Some(Item::LeafPile), // 1%
+                            q if q < 625 => Some(Item::LeafBucket), // .25%
+                            q if q < 630 => Some(Item::LeafBarrel), // .05%
+                            q if q < 631 => Some(Item::LeafTruckload), // .01%
                             _ => None
                         } {
-                            add_item(user_id, item as u32, &mut conn).await;
-                            embed = embed.field("Bonus", format!("You also found a `{gift}`!\n*It is now in your inventory.*"), true)
+                            embed = embed.field("Bonus", format!("You also found a `{}`!\n*It is now in your inventory.*", item.as_str()), true);
+                            add_item(user_id, item as i32, &mut conn).await;
                         }
                         builder.embed(embed)
                     }
@@ -244,6 +264,7 @@ async fn main() {
         .await
         .expect("Err creating client");
 
+    let _ = File::create_new("/data/rake.db"); // Only create if DB doesn't already exist
     let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
         .await
         .expect("Couldn't connect to Rake's DB");
