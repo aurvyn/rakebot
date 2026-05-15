@@ -4,6 +4,7 @@ use serenity::{
         Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
         EventHandler, GatewayIntents, Message, Timestamp,
         colours::roles::{DARK_GREEN, DARK_RED},
+        prelude::TypeMapKey,
     },
     async_trait,
     model::gateway::Ready,
@@ -12,6 +13,11 @@ use sqlx::{Connection, SqliteConnection};
 use std::{env, fs::File};
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
+const GIFT_DROPCHANCE: &str = "**`Handful of Leaves`**: Grants 20 Leaves upon selling (5%)\n
+    **`Pile of Leaves`**: Grants 100 Leaves upon selling (1%)\n
+    **`Bucket of Leaves`**: Grants 400 Leaves upon selling (0.25%)\n
+    **`Barrel of Leaves`**: Grants 2,000 Leaves upon selling (0.05%)\n
+    **`Truckload of Leaves`**: Grants 10,000 Leaves upon selling (0.01%)";
 const RESPONSES: &[&str] = &[
     "Yes",
     "Maybe",
@@ -35,6 +41,12 @@ const RESPONSES: &[&str] = &[
     "Nahhh",
 ];
 
+macro_rules! get_conn {
+    ($ctx:expr) => {
+        $ctx.data.write().await.get_mut::<DbConnection>().unwrap()
+    };
+}
+
 enum RakeType {
     Normal,
     Risky,
@@ -50,6 +62,17 @@ enum Item {
 }
 
 impl Item {
+    fn from(id: i32) -> Option<Self> {
+        match id {
+            v if v == Item::LeafHandful as i32 => Some(Item::LeafHandful),
+            v if v == Item::LeafPile as i32 => Some(Item::LeafPile),
+            v if v == Item::LeafBucket as i32 => Some(Item::LeafBucket),
+            v if v == Item::LeafBarrel as i32 => Some(Item::LeafBarrel),
+            v if v == Item::LeafTruckload as i32 => Some(Item::LeafTruckload),
+            _ => None,
+        }
+    }
+
     fn as_str(&self) -> &'static str {
         match self {
             Item::LeafHandful => "Handful of Leaves",
@@ -59,6 +82,10 @@ impl Item {
             Item::LeafTruckload => "Truckload of Leaves",
         }
     }
+}
+struct DbConnection;
+impl TypeMapKey for DbConnection {
+    type Value = SqliteConnection;
 }
 
 async fn try_create_tables(conn: &mut SqliteConnection) {
@@ -107,6 +134,16 @@ async fn get_from_user(field: &str, user_id: i64, conn: &mut SqliteConnection) -
         .0
 }
 
+async fn get_inventory(user_id: i64, conn: &mut SqliteConnection) -> Vec<(i32, i32)> {
+    sqlx::query_as::<_, (i32, i32)>(&format!(
+        "SELECT item_id, quantity FROM inventory WHERE user_id = ?"
+    ))
+    .bind(user_id)
+    .fetch_all(conn)
+    .await
+    .unwrap()
+}
+
 async fn update_raking(
     user_id: i64,
     exp: i32,
@@ -142,12 +179,14 @@ async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
         .unwrap();
 }
 
-async fn raking(msg: &Message, builder: CreateMessage, rake_type: RakeType) -> CreateMessage {
-    let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
-        .await
-        .expect("Couldn't connect to Rake's DB");
+async fn raking(
+    ctx: &Context,
+    msg: &Message,
+    builder: CreateMessage,
+    rake_type: RakeType,
+) -> CreateMessage {
     let user_id = msg.author.id.get() as i64;
-    try_register(user_id, &mut conn).await;
+    try_register(user_id, get_conn!(ctx)).await;
     let current_time = msg.timestamp.unix_timestamp();
     let (delay, field, exp_range, leaves_range, remark, method) = match rake_type {
         RakeType::Normal => (
@@ -175,16 +214,16 @@ async fn raking(msg: &Message, builder: CreateMessage, rake_type: RakeType) -> C
             "You already claimed your daily reward",
         ),
     };
-    let next_time = get_from_user(field, user_id, &mut conn).await + delay;
+    let next_time = get_from_user(field, user_id, get_conn!(ctx)).await + delay;
     let exp = random_range(exp_range);
     let leaves = random_range(leaves_range);
     if next_time > current_time {
         builder.content(format!("{method}, please try again <t:{next_time}:R>.",))
     } else {
-        update_raking(user_id, exp, leaves, field, current_time, &mut conn).await;
+        update_raking(user_id, exp, leaves, field, current_time, get_conn!(ctx)).await;
         let mut embed = CreateEmbed::new()
             .title(format!("{remark} with `bare hands`.")) // change later
-            .description(format!("`{exp:+} exp`\n`{leaves:+} leaves`"))
+            .description(format!("`{exp:+} exp`\n`{leaves:+} Leaves`"))
             .color(DARK_GREEN);
         if let Some(item) = match random_range(0..10000) {
             q if q < 500 => Some(Item::LeafHandful),   // 5%
@@ -202,7 +241,7 @@ async fn raking(msg: &Message, builder: CreateMessage, rake_type: RakeType) -> C
                 ),
                 true,
             );
-            add_item(user_id, item as i32, &mut conn).await;
+            add_item(user_id, item as i32, get_conn!(ctx)).await;
         }
         builder.embed(embed)
     }
@@ -240,6 +279,28 @@ impl EventHandler for Handler {
         let mut builder = CreateMessage::new();
         builder = match content.split_once(" ") {
             Some((command, input)) => match command {
+                "help" => match input {
+                    "rake" | "r" => builder.embed(CreateEmbed::new()
+                        .title("`rake` (alias: `r`)")
+                        .description("The basic command to rake and obtain Leaves.")
+                        .color(DARK_GREEN)
+                        .field("Details", "**exp**: `5`-`10`\n
+                            **Leaves**: `(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n
+                            **cooldown**: `(30 + <rake size>)` seconds", false)
+                        .field("Drops", GIFT_DROPCHANCE, false)),
+                    "riskyRake" | "rr" => builder.embed(CreateEmbed::new()
+                        .title("`riskyRake` (alias: `rr`)")
+                        .description("The risky version of raking to obtain or lose Leaves.")
+                        .color(DARK_GREEN)
+                        .field("Details", "**exp**: `-10`-`40`\n
+                            **Leaves**: `(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n
+                            **cooldown**: `(60 + 2 * <rake size>)` seconds", false)
+                        .field("Drops", GIFT_DROPCHANCE, false)),
+                    _ => builder.embed(CreateEmbed::new()
+                        .title(format!("What's `{input}`?"))
+                        .description("I don't have that command, try `oi help` to see available commands.")
+                        .color(DARK_RED))
+                }
                 "say" | "say," => builder.embed(CreateEmbed::new()
                     .title("Question")
                     .description(input)
@@ -270,13 +331,26 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .timestamp(Timestamp::now())),
                 "rake" | "r" => {
-                    raking(&msg, builder, RakeType::Normal).await
+                    raking(&ctx, &msg, builder, RakeType::Normal).await
                 }
                 "riskyRake" | "rr" => {
-                    raking(&msg, builder, RakeType::Risky).await
+                    raking(&ctx, &msg, builder, RakeType::Risky).await
                 }
                 "daily" => {
-                    raking(&msg, builder, RakeType::Daily).await
+                    raking(&ctx, &msg, builder, RakeType::Daily).await
+                }
+                "inventory" | "inv" => {
+                    let user_id = msg.author.id.get() as i64;
+                    let mut data = ctx.data.write().await;
+                    let conn = data.get_mut::<DbConnection>().unwrap();
+                    builder.embed(CreateEmbed::new()
+                    .title("Your inventory")
+                    .description(get_inventory(user_id, conn).await
+                        .into_iter().map(|(item_id, quantity)|
+                            format!("{quantity} of {}", Item::from(item_id).unwrap().as_str()))
+                        .collect::<Vec<_>>().join("\n")
+                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, conn).await))
+                    .color(DARK_GREEN))
                 }
                 _ => builder.embed(CreateEmbed::new()
                     .title("What?")
@@ -315,6 +389,10 @@ async fn main() {
         .await
         .expect("Couldn't connect to Rake's DB");
     try_create_tables(&mut conn).await;
+    {
+        let mut data = client.data.write().await;
+        data.insert::<DbConnection>(conn);
+    }
 
     // Finally, start a single shard, and start listening to events.
     //
