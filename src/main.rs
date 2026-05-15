@@ -34,6 +34,13 @@ const RESPONSES: &[&str] = &[
     "Definitely!",
     "Nahhh",
 ];
+
+enum RakeType {
+    Normal,
+    Risky,
+    Daily,
+}
+
 enum Item {
     LeafHandful,
     LeafPile,
@@ -70,26 +77,15 @@ async fn try_create_tables(conn: &mut SqliteConnection) {
     .unwrap();
     sqlx::query(
         "
-        CREATE TABLE IF NOT EXISTS item (
-            id   INTEGER PRIMARY KEY,
-            name TEXT    NOT NULL
-        )",
-    )
-    .execute(&mut *conn)
-    .await
-    .unwrap();
-    sqlx::query(
-        "
         CREATE TABLE IF NOT EXISTS inventory (
             user_id  INTEGER NOT NULL,
             item_id  INTEGER NOT NULL,
             quantity INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, item_id),
-            FOREIGN KEY (user_id) REFERENCES user(id),
-            FOREIGN KEY (item_id) REFERENCES item(id)
+            FOREIGN KEY (user_id) REFERENCES user(id)
         )",
     )
-    .execute(conn)
+    .execute(&mut *conn)
     .await
     .unwrap();
 }
@@ -102,8 +98,8 @@ async fn try_register(user_id: i64, conn: &mut SqliteConnection) {
         .unwrap();
 }
 
-async fn get_last_raked(user_id: i64, conn: &mut SqliteConnection) -> i64 {
-    sqlx::query_as::<_, (i64,)>("SELECT last_raked FROM user WHERE id = ?")
+async fn get_from_user(field: &str, user_id: i64, conn: &mut SqliteConnection) -> i64 {
+    sqlx::query_as::<_, (i64,)>(&format!("SELECT {field} FROM user WHERE id = ?"))
         .bind(user_id)
         .fetch_one(conn)
         .await
@@ -115,17 +111,20 @@ async fn update_raking(
     user_id: i64,
     exp: i32,
     leaves: i32,
+    field: &str,
     last_raked: i64,
     conn: &mut SqliteConnection,
 ) {
-    sqlx::query("UPDATE user SET exp = exp + ?, leaves = leaves + ?, last_raked = ? WHERE id = ?")
-        .bind(exp)
-        .bind(leaves)
-        .bind(last_raked)
-        .bind(user_id)
-        .execute(conn)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "UPDATE user SET exp = exp + ?, leaves = leaves + ?, {field} = ? WHERE id = ?"
+    ))
+    .bind(exp)
+    .bind(leaves)
+    .bind(last_raked)
+    .bind(user_id)
+    .execute(conn)
+    .await
+    .unwrap();
 }
 
 async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
@@ -143,30 +142,48 @@ async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
         .unwrap();
 }
 
-async fn raking(msg: &Message, builder: CreateMessage, risky: bool) -> CreateMessage {
+async fn raking(msg: &Message, builder: CreateMessage, rake_type: RakeType) -> CreateMessage {
     let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
         .await
         .expect("Couldn't connect to Rake's DB");
     let user_id = msg.author.id.get() as i64;
     try_register(user_id, &mut conn).await;
-    let last_raked = get_last_raked(user_id, &mut conn).await;
     let current_time = msg.timestamp.unix_timestamp();
-    let (delay, exp_range, leaves_range, remark) = if risky {
-        (60, -10..40, -10..20, ", but with great risk")
-    } else {
-        (30, 5..10, 1..4, "")
+    let (delay, field, exp_range, leaves_range, remark, method) = match rake_type {
+        RakeType::Normal => (
+            30,
+            "last_raked",
+            5..10,
+            1..4,
+            "You raked",
+            "Raking is on cooldown",
+        ),
+        RakeType::Risky => (
+            60,
+            "last_raked",
+            -10..40,
+            -6..16,
+            "With great risk, you raked",
+            "Risky raking is on cooldown",
+        ),
+        RakeType::Daily => (
+            72000, // 20 hours
+            "last_daily",
+            200..240,
+            100..120,
+            "You claimed your daily reward by raking",
+            "You already claimed your daily reward",
+        ),
     };
-    let next_time = last_raked + delay;
+    let next_time = get_from_user(field, user_id, &mut conn).await + delay;
     let exp = random_range(exp_range);
     let leaves = random_range(leaves_range);
     if next_time > current_time {
-        builder.content(format!(
-            "Your rake is on cooldown, you may try again <t:{next_time}:R>.",
-        ))
+        builder.content(format!("{method}, please try again <t:{next_time}:R>.",))
     } else {
-        update_raking(user_id, exp, leaves, current_time, &mut conn).await;
+        update_raking(user_id, exp, leaves, field, current_time, &mut conn).await;
         let mut embed = CreateEmbed::new()
-            .title(format!("You raked with `bare hands`{remark}.")) // change later
+            .title(format!("{remark} with `bare hands`.")) // change later
             .description(format!("`{exp:+} exp`\n`{leaves:+} leaves`"))
             .color(DARK_GREEN);
         if let Some(item) = match random_range(0..10000) {
@@ -253,10 +270,13 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .timestamp(Timestamp::now())),
                 "rake" | "r" => {
-                    raking(&msg, builder, false).await
+                    raking(&msg, builder, RakeType::Normal).await
                 }
                 "riskyRake" | "rr" => {
-                    raking(&msg, builder, true).await
+                    raking(&msg, builder, RakeType::Risky).await
+                }
+                "daily" => {
+                    raking(&msg, builder, RakeType::Daily).await
                 }
                 _ => builder.embed(CreateEmbed::new()
                     .title("What?")
