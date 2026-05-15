@@ -1,11 +1,13 @@
 use rand::random_range;
-use serenity::all::{
-    Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
-    EventHandler, GatewayIntents, Message, Timestamp,
-    colours::roles::{DARK_GREEN, DARK_RED},
+use serenity::{
+    all::{
+        Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
+        EventHandler, GatewayIntents, Message, Timestamp,
+        colours::roles::{DARK_GREEN, DARK_RED},
+    },
+    async_trait,
+    model::gateway::Ready,
 };
-use serenity::async_trait;
-use serenity::model::gateway::Ready;
 use sqlx::{Connection, SqliteConnection};
 use std::{env, fs::File};
 
@@ -59,7 +61,8 @@ async fn try_create_tables(conn: &mut SqliteConnection) {
             id         INTEGER PRIMARY KEY,
             exp        INTEGER NOT NULL DEFAULT 0,
             leaves     INTEGER NOT NULL DEFAULT 0,
-            last_raked INTEGER NOT NULL DEFAULT 0
+            last_raked INTEGER NOT NULL DEFAULT 0,
+            last_daily INTEGER NOT NULL DEFAULT 0
         )",
     )
     .execute(&mut *conn)
@@ -140,6 +143,54 @@ async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
         .unwrap();
 }
 
+async fn raking(msg: &Message, builder: CreateMessage, risky: bool) -> CreateMessage {
+    let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
+        .await
+        .expect("Couldn't connect to Rake's DB");
+    let user_id = msg.author.id.get() as i64;
+    try_register(user_id, &mut conn).await;
+    let last_raked = get_last_raked(user_id, &mut conn).await;
+    let current_time = msg.timestamp.unix_timestamp();
+    let (delay, exp_range, leaves_range, remark) = if risky {
+        (60, -10..40, -10..20, ", but with great risk")
+    } else {
+        (30, 5..10, 1..4, "")
+    };
+    let next_time = last_raked + delay;
+    let exp = random_range(exp_range);
+    let leaves = random_range(leaves_range);
+    if next_time > current_time {
+        builder.content(format!(
+            "Your rake is on cooldown, you may try again <t:{next_time}:R>.",
+        ))
+    } else {
+        update_raking(user_id, exp, leaves, current_time, &mut conn).await;
+        let mut embed = CreateEmbed::new()
+            .title(format!("You raked with `bare hands`{remark}.")) // change later
+            .description(format!("`{exp:+} exp`\n`{leaves:+} leaves`"))
+            .color(DARK_GREEN);
+        if let Some(item) = match random_range(0..10000) {
+            q if q < 500 => Some(Item::LeafHandful),   // 5%
+            q if q < 600 => Some(Item::LeafPile),      // 1%
+            q if q < 625 => Some(Item::LeafBucket),    // .25%
+            q if q < 630 => Some(Item::LeafBarrel),    // .05%
+            q if q < 631 => Some(Item::LeafTruckload), // .01%
+            _ => None,
+        } {
+            embed = embed.field(
+                "Bonus",
+                format!(
+                    "You also found a `{}`!\n*It is now in your inventory.*",
+                    item.as_str()
+                ),
+                true,
+            );
+            add_item(user_id, item as i32, &mut conn).await;
+        }
+        builder.embed(embed)
+    }
+}
+
 fn fnv1a_hash(s: &str) -> usize {
     s.bytes().fold(0xcbf29ce484222325, |acc, b| {
         (acc ^ b as usize) * 0x100000001b3
@@ -190,7 +241,7 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .thumbnail(ICON_URL)
                     .fields(vec![
-                        ("Raking", "`rake`, `riskyRake`, `daily`, `rank`, `leaderboard`, `shop`, `inventory`, `character`, `equip`, `unequip`, `info`, `sell`, `pvp`", false),
+                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`, `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`, `equip`, `unequip`, `info`, `sell`, `arena (pvp)`", false),
                         ("Fun", "`say`", false),
                         ("Utility", "`ping`, `invite`", false),
                         ("Music", "`play`, `leave`", false),
@@ -201,36 +252,11 @@ impl EventHandler for Handler {
                     .title("🏓 Pong!")
                     .color(DARK_GREEN)
                     .timestamp(Timestamp::now())),
-                "rake" => {
-                    let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
-                        .await.expect("Couldn't connect to Rake's DB");
-                    let user_id = msg.author.id.get() as i64;
-                    try_register(user_id, &mut conn).await;
-                    let last_raked = get_last_raked(user_id, &mut conn).await;
-                    let current_time = msg.timestamp.unix_timestamp();
-                    if last_raked + 30 > current_time {
-                        builder.content(format!("Your rake is on cooldown, please wait **{}** more seconds.", 30 - (msg.timestamp.unix_timestamp() - last_raked)))
-                    } else {
-                        let exp = random_range(5..10);
-                        let leaves = random_range(1..4);
-                        update_raking(user_id, exp, leaves, current_time, &mut conn).await;
-                        let mut embed = CreateEmbed::new()
-                            .title("You raked with `bare hands`.") // change later
-                            .description(format!("`+{exp} exp`\n`+{leaves} leaves`"))
-                            .color(DARK_GREEN);
-                        if let Some(item) = match random_range(0..10000) {
-                            q if q < 500 => Some(Item::LeafHandful), // 5%
-                            q if q < 600 => Some(Item::LeafPile), // 1%
-                            q if q < 625 => Some(Item::LeafBucket), // .25%
-                            q if q < 630 => Some(Item::LeafBarrel), // .05%
-                            q if q < 631 => Some(Item::LeafTruckload), // .01%
-                            _ => None
-                        } {
-                            embed = embed.field("Bonus", format!("You also found a `{}`!\n*It is now in your inventory.*", item.as_str()), true);
-                            add_item(user_id, item as i32, &mut conn).await;
-                        }
-                        builder.embed(embed)
-                    }
+                "rake" | "r" => {
+                    raking(&msg, builder, false).await
+                }
+                "riskyRake" | "rr" => {
+                    raking(&msg, builder, true).await
                 }
                 _ => builder.embed(CreateEmbed::new()
                     .title("What?")
