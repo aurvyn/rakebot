@@ -2,22 +2,22 @@ use rand::random_range;
 use serenity::{
     all::{
         Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
-        EventHandler, GatewayIntents, Message, Timestamp,
+        EventHandler, GatewayIntents, Message, Ready, Timestamp, UserId,
         colours::roles::{DARK_GREEN, DARK_RED},
-        prelude::TypeMapKey,
     },
     async_trait,
-    model::gateway::Ready,
+    futures::StreamExt,
+    prelude::TypeMapKey,
 };
 use sqlx::{Connection, SqliteConnection};
 use std::{env, fs::File};
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
-const GIFT_DROPCHANCE: &str = "**`Handful of Leaves`**: Grants 20 Leaves upon selling (5%)\n
-    **`Pile of Leaves`**: Grants 100 Leaves upon selling (1%)\n
-    **`Bucket of Leaves`**: Grants 400 Leaves upon selling (0.25%)\n
-    **`Barrel of Leaves`**: Grants 2,000 Leaves upon selling (0.05%)\n
-    **`Truckload of Leaves`**: Grants 10,000 Leaves upon selling (0.01%)";
+const GIFT_DROPCHANCE: &str = "- **`Handful of Leaves`**: Grants 20 Leaves upon selling (5%)
+- **`Pile of Leaves`**: Grants 100 Leaves upon selling (1%)
+- **`Bucket of Leaves`**: Grants 400 Leaves upon selling (0.25%)
+- **`Barrel of Leaves`**: Grants 2,000 Leaves upon selling (0.05%)
+- **`Truckload of Leaves`**: Grants 10,000 Leaves upon selling (0.01%)";
 const RESPONSES: &[&str] = &[
     "Yes",
     "Maybe",
@@ -126,19 +126,47 @@ async fn try_register(user_id: i64, conn: &mut SqliteConnection) {
 }
 
 async fn get_from_user(field: &str, user_id: i64, conn: &mut SqliteConnection) -> i64 {
-    sqlx::query_as::<_, (i64,)>(&format!("SELECT {field} FROM user WHERE id = ?"))
+    let (result,) = sqlx::query_as(&format!("SELECT {field} FROM user WHERE id = ?"))
         .bind(user_id)
         .fetch_one(conn)
         .await
-        .unwrap()
-        .0
+        .unwrap();
+    result
 }
 
 async fn get_inventory(user_id: i64, conn: &mut SqliteConnection) -> Vec<(i32, i32)> {
-    sqlx::query_as::<_, (i32, i32)>(&format!(
-        "SELECT item_id, quantity FROM inventory WHERE user_id = ?"
+    sqlx::query_as(&"SELECT item_id, quantity FROM inventory WHERE user_id = ?")
+        .bind(user_id)
+        .fetch_all(conn)
+        .await
+        .unwrap()
+}
+
+async fn get_lb(
+    conn: &mut SqliteConnection,
+    server_ids: Vec<u64>,
+    limit: Option<u8>,
+) -> Vec<(u64, i64)> {
+    sqlx::query_as(&format!(
+        "SELECT id, exp FROM user {} ORDER BY exp DESC, leaves DESC {}",
+        if server_ids.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "WHERE id IN ({})",
+                server_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        },
+        if let Some(lim) = limit {
+            format!("LIMIT {lim}")
+        } else {
+            String::new()
+        }
     ))
-    .bind(user_id)
     .fetch_all(conn)
     .await
     .unwrap()
@@ -247,6 +275,18 @@ async fn raking(
     }
 }
 
+async fn get_lb_string(ctx: &Context, server_ids: Vec<u64>) -> String {
+    let mut top10 = String::new();
+    for (id, exp) in get_lb(get_conn!(ctx), server_ids, Some(10)).await {
+        top10 += &if let Ok(user) = UserId::new(id).to_user(&ctx).await {
+            format!("1. `{:<20}{exp:>8} exp`\n", user.name)
+        } else {
+            format!("1. `{:<20}{exp:>8} exp`\n", "???")
+        }
+    }
+    top10
+}
+
 fn fnv1a_hash(s: &str) -> usize {
     s.bytes().fold(0xcbf29ce484222325, |acc, b| {
         (acc ^ b as usize) * 0x100000001b3
@@ -284,17 +324,17 @@ impl EventHandler for Handler {
                         .title("`rake` (alias: `r`)")
                         .description("The basic command to rake and obtain Leaves.")
                         .color(DARK_GREEN)
-                        .field("Details", "**exp**: `5`-`10`\n
-                            **Leaves**: `(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n
-                            **cooldown**: `(30 + <rake size>)` seconds", false)
+                        .field("Details", "**exp**:\n`5`-`10`\n\
+                            **Leaves**:\n`(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n\
+                            **cooldown**:\n`(30 + <rake size>)` seconds", false)
                         .field("Drops", GIFT_DROPCHANCE, false)),
                     "riskyRake" | "rr" => builder.embed(CreateEmbed::new()
                         .title("`riskyRake` (alias: `rr`)")
                         .description("The risky version of raking to obtain or lose Leaves.")
                         .color(DARK_GREEN)
-                        .field("Details", "**exp**: `-10`-`40`\n
-                            **Leaves**: `(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n
-                            **cooldown**: `(60 + 2 * <rake size>)` seconds", false)
+                        .field("Details", "**exp**:\n`-10`-`40`\n\
+                            **Leaves**:\n`(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n\
+                            **cooldown**:\n`(60 + 2 * <rake size>)` seconds", false)
                         .field("Drops", GIFT_DROPCHANCE, false)),
                     _ => builder.embed(CreateEmbed::new()
                         .title(format!("What's `{input}`?"))
@@ -319,7 +359,9 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .thumbnail(ICON_URL)
                     .fields(vec![
-                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`, `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`, `equip`, `unequip`, `info`, `sell`, `arena (pvp)`", false),
+                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`,
+                            `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`,
+                            `equip`, `unequip`, `info`, `sell`, `arena (pvp)`", false),
                         ("Fun", "`say`", false),
                         ("Utility", "`ping`, `invite`", false),
                         ("Music", "`play`, `leave`", false),
@@ -341,16 +383,37 @@ impl EventHandler for Handler {
                 }
                 "inventory" | "inv" => {
                     let user_id = msg.author.id.get() as i64;
-                    let mut data = ctx.data.write().await;
-                    let conn = data.get_mut::<DbConnection>().unwrap();
                     builder.embed(CreateEmbed::new()
                     .title("Your inventory")
-                    .description(get_inventory(user_id, conn).await
+                    .description(get_inventory(user_id, get_conn!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
                             format!("{quantity} of {}", Item::from(item_id).unwrap().as_str()))
                         .collect::<Vec<_>>().join("\n")
-                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, conn).await))
+                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_conn!(ctx)).await))
                     .color(DARK_GREEN))
+                }
+                "leaderboard" | "lb" => {
+                    let loading_msg = msg.channel_id.send_message(&ctx.http,
+                        CreateMessage::new().content("<a:loading:822855468731990058> loading...")
+                        ).await.unwrap_or_default();
+                    let top10global = get_lb_string(&ctx, vec![]).await;
+                    let mut embed = CreateEmbed::new()
+                        .title("Global Leaderboard")
+                        .description(top10global)
+                        .color(DARK_GREEN);
+                    let mut server_ids = vec![];
+                    if let Some(guild_id) = msg.guild_id {
+                        let mut members = guild_id.members_iter(&ctx).boxed();
+                        while let Some(result) = members.next().await {
+                            if let Ok(member) = result {
+                                server_ids.push(member.user.id.get());
+                            }
+                        }
+                        let top10server = get_lb_string(&ctx, server_ids).await;
+                        embed = embed.field("Server Leaderboard", top10server, false);
+                    }
+                    loading_msg.delete(&ctx).await.unwrap();
+                    builder.embed(embed)
                 }
                 _ => builder.embed(CreateEmbed::new()
                     .title("What?")
