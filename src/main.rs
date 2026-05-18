@@ -9,7 +9,7 @@ use serenity::{
     futures::StreamExt,
     prelude::TypeMapKey,
 };
-use sqlx::{Connection, SqliteConnection};
+use sqlx::SqlitePool;
 use std::{env, fs::File};
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
@@ -41,9 +41,9 @@ const RESPONSES: &[&str] = &[
     "Nahhh",
 ];
 
-macro_rules! get_conn {
+macro_rules! get_pool {
     ($ctx:expr) => {
-        $ctx.data.write().await.get_mut::<DbConnection>().unwrap()
+        $ctx.data.read().await.get::<DbPool>().unwrap()
     };
 }
 
@@ -83,12 +83,12 @@ impl Item {
         }
     }
 }
-struct DbConnection;
-impl TypeMapKey for DbConnection {
-    type Value = SqliteConnection;
+struct DbPool;
+impl TypeMapKey for DbPool {
+    type Value = SqlitePool;
 }
 
-async fn try_create_tables(conn: &mut SqliteConnection) {
+async fn try_create_tables(pool: &SqlitePool) {
     sqlx::query(
         "
         CREATE TABLE IF NOT EXISTS user (
@@ -99,7 +99,7 @@ async fn try_create_tables(conn: &mut SqliteConnection) {
             last_daily INTEGER NOT NULL DEFAULT 0
         )",
     )
-    .execute(&mut *conn)
+    .execute(pool)
     .await
     .unwrap();
     sqlx::query(
@@ -112,41 +112,37 @@ async fn try_create_tables(conn: &mut SqliteConnection) {
             FOREIGN KEY (user_id) REFERENCES user(id)
         )",
     )
-    .execute(&mut *conn)
+    .execute(pool)
     .await
     .unwrap();
 }
 
-async fn try_register(user_id: i64, conn: &mut SqliteConnection) {
+async fn try_register(user_id: i64, pool: &SqlitePool) {
     sqlx::query("INSERT OR IGNORE INTO user (id) VALUES (?)")
         .bind(user_id)
-        .execute(conn)
+        .execute(pool)
         .await
         .unwrap();
 }
 
-async fn get_from_user(field: &str, user_id: i64, conn: &mut SqliteConnection) -> i64 {
+async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
     let (result,) = sqlx::query_as(&format!("SELECT {field} FROM user WHERE id = ?"))
         .bind(user_id)
-        .fetch_one(conn)
+        .fetch_one(pool)
         .await
         .unwrap();
     result
 }
 
-async fn get_inventory(user_id: i64, conn: &mut SqliteConnection) -> Vec<(i32, i32)> {
+async fn get_inventory(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
     sqlx::query_as(&"SELECT item_id, quantity FROM inventory WHERE user_id = ?")
         .bind(user_id)
-        .fetch_all(conn)
+        .fetch_all(pool)
         .await
         .unwrap()
 }
 
-async fn get_lb(
-    conn: &mut SqliteConnection,
-    server_ids: Vec<u64>,
-    limit: Option<u8>,
-) -> Vec<(u64, i64)> {
+async fn get_lb(pool: &SqlitePool, server_ids: Vec<u64>, limit: Option<u8>) -> Vec<(u64, i64)> {
     sqlx::query_as(&format!(
         "SELECT id, exp FROM user {} ORDER BY exp DESC, leaves DESC {}",
         if server_ids.is_empty() {
@@ -167,7 +163,7 @@ async fn get_lb(
             String::new()
         }
     ))
-    .fetch_all(conn)
+    .fetch_all(pool)
     .await
     .unwrap()
 }
@@ -178,7 +174,7 @@ async fn update_raking(
     leaves: i32,
     field: &str,
     last_raked: i64,
-    conn: &mut SqliteConnection,
+    pool: &SqlitePool,
 ) {
     sqlx::query(&format!(
         "UPDATE user SET exp = exp + ?, leaves = leaves + ?, {field} = ? WHERE id = ?"
@@ -187,22 +183,22 @@ async fn update_raking(
     .bind(leaves)
     .bind(last_raked)
     .bind(user_id)
-    .execute(conn)
+    .execute(pool)
     .await
     .unwrap();
 }
 
-async fn add_item(user_id: i64, item_id: i32, conn: &mut SqliteConnection) {
+async fn add_item(user_id: i64, item_id: i32, pool: &SqlitePool) {
     sqlx::query("INSERT OR IGNORE INTO inventory (user_id, item_id, quantity) VALUES (?, ?, 0)")
         .bind(user_id)
         .bind(item_id)
-        .execute(&mut *conn)
+        .execute(pool)
         .await
         .unwrap();
     sqlx::query("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_id = ?")
         .bind(user_id)
         .bind(item_id)
-        .execute(conn)
+        .execute(pool)
         .await
         .unwrap();
 }
@@ -214,8 +210,7 @@ async fn raking(
     rake_type: RakeType,
 ) -> CreateMessage {
     let user_id = msg.author.id.get() as i64;
-    try_register(user_id, get_conn!(ctx)).await;
-    let current_time = msg.timestamp.unix_timestamp();
+    try_register(user_id, get_pool!(ctx)).await;
     let (delay, field, exp_range, leaves_range, remark, method) = match rake_type {
         RakeType::Normal => (
             30,
@@ -242,42 +237,42 @@ async fn raking(
             "You already claimed your daily reward",
         ),
     };
-    let next_time = get_from_user(field, user_id, get_conn!(ctx)).await + delay;
+    let time = msg.timestamp.unix_timestamp();
+    let next_time = get_from_user(field, user_id, get_pool!(ctx)).await + delay;
+    if next_time > time {
+        return builder.content(format!("{method}, please try again <t:{next_time}:R>.",));
+    }
     let exp = random_range(exp_range);
     let leaves = random_range(leaves_range);
-    if next_time > current_time {
-        builder.content(format!("{method}, please try again <t:{next_time}:R>.",))
-    } else {
-        update_raking(user_id, exp, leaves, field, current_time, get_conn!(ctx)).await;
-        let mut embed = CreateEmbed::new()
-            .title(format!("{remark} with `bare hands`.")) // change later
-            .description(format!("`{exp:+} exp`\n`{leaves:+} Leaves`"))
-            .color(DARK_GREEN);
-        if let Some(item) = match random_range(0..10000) {
-            q if q < 500 => Some(Item::LeafHandful),   // 5%
-            q if q < 600 => Some(Item::LeafPile),      // 1%
-            q if q < 625 => Some(Item::LeafBucket),    // .25%
-            q if q < 630 => Some(Item::LeafBarrel),    // .05%
-            q if q < 631 => Some(Item::LeafTruckload), // .01%
-            _ => None,
-        } {
-            embed = embed.field(
-                "Bonus",
-                format!(
-                    "You also found a `{}`!\n*It is now in your inventory.*",
-                    item.as_str()
-                ),
-                true,
-            );
-            add_item(user_id, item as i32, get_conn!(ctx)).await;
-        }
-        builder.embed(embed)
+    update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
+    let mut embed = CreateEmbed::new()
+        .title(format!("{remark} with `bare hands`.")) // change later
+        .description(format!("`{exp:+} exp`\n`{leaves:+} Leaves`"))
+        .color(DARK_GREEN);
+    if let Some(item) = match random_range(0..10000) {
+        q if q < 500 => Some(Item::LeafHandful),   // 5%
+        q if q < 600 => Some(Item::LeafPile),      // 1%
+        q if q < 625 => Some(Item::LeafBucket),    // .25%
+        q if q < 630 => Some(Item::LeafBarrel),    // .05%
+        q if q < 631 => Some(Item::LeafTruckload), // .01%
+        _ => None,
+    } {
+        embed = embed.field(
+            "Bonus",
+            format!(
+                "You also found a `{}`!\n*It is now in your inventory.*",
+                item.as_str()
+            ),
+            true,
+        );
+        add_item(user_id, item as i32, get_pool!(ctx)).await;
     }
+    builder.embed(embed)
 }
 
 async fn get_lb_string(ctx: &Context, server_ids: Vec<u64>) -> String {
     let mut top10 = String::new();
-    for (id, exp) in get_lb(get_conn!(ctx), server_ids, Some(10)).await {
+    for (id, exp) in get_lb(get_pool!(ctx), server_ids, Some(10)).await {
         top10 += &if let Ok(user) = UserId::new(id).to_user(&ctx).await {
             format!("1. `{:<20}{exp:>8} exp`\n", user.name)
         } else {
@@ -359,8 +354,8 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .thumbnail(ICON_URL)
                     .fields(vec![
-                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`,
-                            `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`,
+                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`,\
+                            `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`,\
                             `equip`, `unequip`, `info`, `sell`, `arena (pvp)`", false),
                         ("Fun", "`say`", false),
                         ("Utility", "`ping`, `invite`", false),
@@ -385,11 +380,11 @@ impl EventHandler for Handler {
                     let user_id = msg.author.id.get() as i64;
                     builder.embed(CreateEmbed::new()
                     .title("Your inventory")
-                    .description(get_inventory(user_id, get_conn!(ctx)).await
+                    .description(get_inventory(user_id, get_pool!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
                             format!("{quantity} of {}", Item::from(item_id).unwrap().as_str()))
                         .collect::<Vec<_>>().join("\n")
-                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_conn!(ctx)).await))
+                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
                     .color(DARK_GREEN))
                 }
                 "leaderboard" | "lb" => {
@@ -448,13 +443,13 @@ async fn main() {
         .expect("Err creating client");
 
     let _ = File::create_new("/data/rake.db"); // Only create if DB doesn't already exist
-    let mut conn = SqliteConnection::connect("sqlite:///data/rake.db")
+    let pool = SqlitePool::connect("sqlite:///data/rake.db")
         .await
         .expect("Couldn't connect to Rake's DB");
-    try_create_tables(&mut conn).await;
+    try_create_tables(&pool).await;
     {
         let mut data = client.data.write().await;
-        data.insert::<DbConnection>(conn);
+        data.insert::<DbPool>(pool);
     }
 
     // Finally, start a single shard, and start listening to events.
