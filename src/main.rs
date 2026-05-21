@@ -118,16 +118,16 @@ async fn try_create_tables(pool: &SqlitePool) {
 }
 
 async fn try_register(user_id: i64, pool: &SqlitePool) {
-    sqlx::query("INSERT OR IGNORE INTO user (id) VALUES (?)")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO user (id) VALUES ({user_id})"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
-    let (result,) = sqlx::query_as(&format!("SELECT {field} FROM user WHERE id = ?"))
-        .bind(user_id)
+    let (result,) = sqlx::query_as(&format!("SELECT {field} FROM user WHERE id = {user_id}"))
         .fetch_one(pool)
         .await
         .unwrap();
@@ -135,11 +135,12 @@ async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
 }
 
 async fn get_inventory(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
-    sqlx::query_as(&"SELECT item_id, quantity FROM inventory WHERE user_id = ?")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await
-        .unwrap()
+    sqlx::query_as(&format!(
+        "SELECT item_id, quantity FROM inventory WHERE user_id = {user_id}"
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
 
 async fn get_lb(pool: &SqlitePool, server_ids: Vec<u64>, limit: Option<u8>) -> Vec<(u64, i64)> {
@@ -177,30 +178,26 @@ async fn update_raking(
     pool: &SqlitePool,
 ) {
     sqlx::query(&format!(
-        "UPDATE user SET exp = exp + ?, leaves = leaves + ?, {field} = ? WHERE id = ?"
+        "UPDATE user SET exp = exp + {exp}, leaves = leaves + {leaves}, {field} = {last_raked} WHERE id = {user_id}"
     ))
-    .bind(exp)
-    .bind(leaves)
-    .bind(last_raked)
-    .bind(user_id)
     .execute(pool)
     .await
     .unwrap();
 }
 
 async fn add_item(user_id: i64, item_id: i32, pool: &SqlitePool) {
-    sqlx::query("INSERT OR IGNORE INTO inventory (user_id, item_id, quantity) VALUES (?, ?, 0)")
-        .bind(user_id)
-        .bind(item_id)
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_id = ?")
-        .bind(user_id)
-        .bind(item_id)
-        .execute(pool)
-        .await
-        .unwrap();
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO inventory (user_id, item_id, quantity) VALUES ({user_id}, {item_id}, 0)"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "UPDATE inventory SET quantity = quantity + 1 WHERE user_id = {user_id} AND item_id = {item_id}"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn raking(
@@ -443,9 +440,11 @@ async fn main() {
         .expect("Err creating client");
 
     let _ = File::create_new("/data/rake.db"); // Only create if DB doesn't already exist
-    let pool = SqlitePool::connect("sqlite:///data/rake.db")
-        .await
-        .expect("Couldn't connect to Rake's DB");
+    let pool = SqlitePool::connect(
+        &env::var("DATABASE_URL").expect("Expected Rake's database url in the environment"),
+    )
+    .await
+    .expect("Couldn't connect to Rake's DB");
     try_create_tables(&pool).await;
     {
         let mut data = client.data.write().await;
