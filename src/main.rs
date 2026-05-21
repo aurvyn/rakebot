@@ -364,6 +364,12 @@ impl EventHandler for Handler {
                     .title("🏓 Pong!")
                     .color(DARK_GREEN)
                     .timestamp(Timestamp::now())),
+                "invite" => builder.embed(CreateEmbed::new()
+                    .title("Invite me to your server!")
+                    .description("[Click this if you're an epic gamer or something idk]\
+                        (https://discord.com/api/oauth2/authorize?client_id=767768980043333642&permissions=3435841&scope=bot)")
+                    .color(DARK_GREEN)
+                    .thumbnail("https://cdn.discordapp.com/avatars/767768980043333642/75c9a79a0aad1157fa8645061601961e.png")),
                 "rake" | "r" => {
                     raking(&ctx, &msg, builder, RakeType::Normal).await
                 }
