@@ -1,4 +1,4 @@
-use rand::random_range;
+use rand::{random_bool, random_range};
 use serenity::{
     all::{
         Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
@@ -83,6 +83,57 @@ impl Item {
         }
     }
 }
+
+enum Passive {
+    Lucky,
+    LuckyZero,
+    Unlucky,
+}
+
+impl Passive {
+    fn from(id: i32) -> Option<Self> {
+        match id {
+            v if v == Passive::Lucky as i32 => Some(Passive::Lucky),
+            v if v == Passive::LuckyZero as i32 => Some(Passive::LuckyZero),
+            v if v == Passive::Unlucky as i32 => Some(Passive::Unlucky),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Passive::Lucky => "Lucky!",
+            Passive::LuckyZero => "Luck o' Clock!",
+            Passive::Unlucky => "Unlucky...",
+        }
+    }
+
+    fn as_desc(&self) -> &'static str {
+        match self {
+            Passive::Lucky => "+10% to maximum possible Leaves received from raking (1 hour)",
+            Passive::LuckyZero => "+10% chance to 10x Leaves received from raking (3 hours)",
+            Passive::Unlucky => "-10% to minimum possible Leaves received from raking (10 minutes)",
+        }
+    }
+
+    /// Returns duration of passive in seconds
+    fn duration(&self) -> i64 {
+        60 * match self {
+            Passive::Lucky => 60,
+            Passive::LuckyZero => 180,
+            Passive::Unlucky => 10,
+        }
+    }
+    /// (min leaves multiplier, max leaves multiplier, final multiplier, chance)
+    fn modifiers(&self) -> (f64, f64, f64, f64) {
+        match self {
+            Passive::Lucky => (0., 0.1, 0., 1.),
+            Passive::LuckyZero => (0., 0., 10., 0.1),
+            Passive::Unlucky => (-0.1, 0., 0., 1.),
+        }
+    }
+}
+
 struct DbPool;
 impl TypeMapKey for DbPool {
     type Value = SqlitePool;
@@ -115,6 +166,19 @@ async fn try_create_tables(pool: &SqlitePool) {
     .execute(pool)
     .await
     .unwrap();
+    sqlx::query(
+        "
+        CREATE TABLE IF NOT EXISTS passive (
+            user_id    INTEGER NOT NULL,
+            passive_id INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, passive_id),
+            FOREIGN KEY (user_id) REFERENCES user(id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn try_register(user_id: i64, pool: &SqlitePool) {
@@ -132,6 +196,15 @@ async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
         .await
         .unwrap();
     result
+}
+
+async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
+    sqlx::query_as(&format!(
+        "SELECT passive_id, expires_at FROM passive WHERE user_id = {user_id} AND expires_at > {time}"
+    ))
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
 
 async fn get_inventory(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
@@ -200,6 +273,21 @@ async fn add_item(user_id: i64, item_id: i32, pool: &SqlitePool) {
     .unwrap();
 }
 
+async fn add_passive(user_id: i64, expires_at: i64, passive_id: i32, pool: &SqlitePool) {
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO passive (user_id, passive_id, expires_at) VALUES ({user_id}, {passive_id}, 0)"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "UPDATE passive SET expires_at = {expires_at} WHERE user_id = {user_id} AND passive_id = {passive_id}"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn raking(
     ctx: &Context,
     msg: &Message,
@@ -208,12 +296,13 @@ async fn raking(
 ) -> CreateMessage {
     let user_id = msg.author.id.get() as i64;
     try_register(user_id, get_pool!(ctx)).await;
-    let (delay, field, exp_range, leaves_range, remark, method) = match rake_type {
+    let (delay, field, exp_range, leaves_start, leaves_end, remark, method) = match rake_type {
         RakeType::Normal => (
             30,
             "last_raked",
             5..11,
-            1..5,
+            1.,
+            5.,
             "You raked",
             "Raking is on cooldown",
         ),
@@ -221,7 +310,8 @@ async fn raking(
             60,
             "last_raked",
             -10..41,
-            -6..17,
+            -6.,
+            17.,
             "With great risk, you raked",
             "Risky raking is on cooldown",
         ),
@@ -229,23 +319,65 @@ async fn raking(
             72000, // 20 hours
             "last_daily",
             200..241,
-            100..121,
+            100.,
+            121.,
             "You claimed your daily reward by raking",
             "You already claimed your daily reward",
         ),
     };
-    let time = msg.timestamp.unix_timestamp();
+    let time = msg.timestamp.timestamp();
     let next_time = get_from_user(field, user_id, get_pool!(ctx)).await + delay;
     if next_time > time {
         return builder.content(format!("{method}, please try again <t:{next_time}:R>.",));
     }
-    let exp = random_range(exp_range);
-    let leaves = random_range(leaves_range);
-    update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
+    let mut exp = random_range(exp_range);
+    let (passives, min, max, mult) =
+        get_passives(user_id, msg.timestamp.timestamp(), get_pool!(ctx))
+            .await
+            .iter()
+            .filter_map(|(passive_id, _)| {
+                Passive::from(*passive_id).and_then(|p| {
+                    let (min, max, mult, chance) = p.modifiers();
+                    if random_bool(chance) {
+                        Some((p.as_str(), min, max, mult))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .fold(
+                (String::new(), 1., 1., 1.),
+                |(names, a, b, c), (name, x, y, z)| (names + "\n- " + name, a + x, b + y, c + z),
+            );
+    let mut leaves = (random_range((leaves_start * min).round()..(leaves_end * max).round()) * mult)
+        .round() as i32;
     let mut embed = CreateEmbed::new()
         .title(format!("{remark} with `bare hands`.")) // change later
         .description(format!("`{exp:+} exp`\n`{leaves:+} Leaves`"))
         .color(DARK_GREEN);
+    if !passives.is_empty() {
+        embed = embed.field("Passives", passives, false)
+    }
+    if exp == leaves {
+        exp += exp;
+        leaves += leaves;
+        let passive = if exp == 0 {
+            Passive::LuckyZero
+        } else if exp > 0 {
+            Passive::Lucky
+        } else {
+            Passive::Unlucky
+        };
+        embed = embed.field(passive.as_str(), passive.as_desc(), false);
+        add_passive(
+            user_id,
+            time + passive.duration(),
+            passive as i32,
+            get_pool!(ctx),
+        )
+        .await;
+    }
+    update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
     if let Some(item) = match random_range(0..10000) {
         q if q < 500 => Some(Item::LeafHandful),   // 5%
         q if q < 600 => Some(Item::LeafPile),      // 1%
@@ -351,8 +483,8 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .thumbnail(ICON_URL)
                     .fields(vec![
-                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`,\
-                            `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`,\
+                        ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`, `passives`, \
+                            `leaderboard (lb)`, `shop`, `inventory (inv)`, `character (char)`, \
                             `equip`, `unequip`, `info`, `sell`, `arena (pvp)`", false),
                         ("Fun", "`say`", false),
                         ("Utility", "`ping`, `invite`", false),
@@ -382,12 +514,24 @@ impl EventHandler for Handler {
                 "inventory" | "inv" => {
                     let user_id = msg.author.id.get() as i64;
                     builder.embed(CreateEmbed::new()
-                    .title("Your inventory")
+                    .title("Your Inventory")
                     .description(get_inventory(user_id, get_pool!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
                             format!("{quantity} of {}", Item::from(item_id).unwrap().as_str()))
                         .collect::<Vec<_>>().join("\n")
                         + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
+                    .color(DARK_GREEN))
+                }
+                "passives" => {
+                    let user_id = msg.author.id.get() as i64;
+                    let passives = get_passives(user_id, msg.timestamp.timestamp(), get_pool!(ctx)).await;
+                    builder.embed(CreateEmbed::new()
+                    .title(format!("You currently have {} passives", passives.len()))
+                    .fields(passives
+                        .into_iter().map(|(passive_id, time)| {
+                            let p = Passive::from(passive_id).unwrap();
+                            (format!("{} (expires <t:{time}:R>)", p.as_str()), p.as_desc(), false)
+                        }))
                     .color(DARK_GREEN))
                 }
                 "leaderboard" | "lb" => {
