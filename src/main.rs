@@ -53,7 +53,37 @@ enum RakeType {
     Daily,
 }
 
-enum Item {
+enum Limb {
+    Head,
+    Neck,
+    Torso,
+    LeftUpperArm,
+    RightUpperArm,
+    LeftLowerArm,
+    RightLowerArm,
+    LeftHand,
+    RightHand,
+    LeftUpperLeg,
+    RightUpperLeg,
+    LeftLowerLeg,
+    RightLowerLeg,
+    LeftFoot,
+    RightFoot,
+}
+
+enum Modifier {
+    Lousy,
+    Dull,
+    Normal,
+    Light,
+    Heavy,
+    Bulky,
+    Intimidating,
+    Superior,
+    Legendary,
+}
+
+enum BaseItem {
     LeafHandful,
     LeafPile,
     LeafBucket,
@@ -61,28 +91,36 @@ enum Item {
     LeafTruckload,
 }
 
-impl Item {
+impl BaseItem {
     fn from(id: i32) -> Option<Self> {
         match id {
-            v if v == Item::LeafHandful as i32 => Some(Item::LeafHandful),
-            v if v == Item::LeafPile as i32 => Some(Item::LeafPile),
-            v if v == Item::LeafBucket as i32 => Some(Item::LeafBucket),
-            v if v == Item::LeafBarrel as i32 => Some(Item::LeafBarrel),
-            v if v == Item::LeafTruckload as i32 => Some(Item::LeafTruckload),
+            v if v == BaseItem::LeafHandful as i32 => Some(BaseItem::LeafHandful),
+            v if v == BaseItem::LeafPile as i32 => Some(BaseItem::LeafPile),
+            v if v == BaseItem::LeafBucket as i32 => Some(BaseItem::LeafBucket),
+            v if v == BaseItem::LeafBarrel as i32 => Some(BaseItem::LeafBarrel),
+            v if v == BaseItem::LeafTruckload as i32 => Some(BaseItem::LeafTruckload),
             _ => None,
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
-            Item::LeafHandful => "Handful of Leaves",
-            Item::LeafPile => "Pile of Leaves",
-            Item::LeafBucket => "Bucket of Leaves",
-            Item::LeafBarrel => "Barrel of Leaves",
-            Item::LeafTruckload => "Truckload of Leaves",
+            BaseItem::LeafHandful => "Handful of Leaves",
+            BaseItem::LeafPile => "Pile of Leaves",
+            BaseItem::LeafBucket => "Bucket of Leaves",
+            BaseItem::LeafBarrel => "Barrel of Leaves",
+            BaseItem::LeafTruckload => "Truckload of Leaves",
         }
     }
 }
+
+struct Item {
+    base: BaseItem,
+    quality: Option<u8>, // up to 25
+    modifier: Option<Modifier>,
+}
+
+type Shop = Vec<Item>;
 
 enum Passive {
     Lucky,
@@ -155,11 +193,13 @@ async fn try_create_tables(pool: &SqlitePool) {
     .unwrap();
     sqlx::query(
         "
-        CREATE TABLE IF NOT EXISTS inventory (
+        CREATE TABLE IF NOT EXISTS item (
             user_id  INTEGER NOT NULL,
             item_id  INTEGER NOT NULL,
             quantity INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, item_id),
+            quality  INTEGER,
+            modifier INTEGER,
+            PRIMARY KEY (user_id, item_id, quality, modifier),
             FOREIGN KEY (user_id) REFERENCES user(id)
         )",
     )
@@ -207,9 +247,9 @@ async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(i32, i
     .unwrap()
 }
 
-async fn get_inventory(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
+async fn get_item(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
     sqlx::query_as(&format!(
-        "SELECT item_id, quantity FROM inventory WHERE user_id = {user_id}"
+        "SELECT item_id, quantity FROM item WHERE user_id = {user_id}"
     ))
     .fetch_all(pool)
     .await
@@ -258,15 +298,16 @@ async fn update_raking(
     .unwrap();
 }
 
-async fn add_item(user_id: i64, item_id: i32, pool: &SqlitePool) {
+async fn add_item(user_id: i64, item: Item, pool: &SqlitePool) {
+    let item_id = item.base as i32;
     sqlx::query(&format!(
-        "INSERT OR IGNORE INTO inventory (user_id, item_id, quantity) VALUES ({user_id}, {item_id}, 0)"
+        "INSERT OR IGNORE INTO item (user_id, item_id, quantity) VALUES ({user_id}, {item_id}, 0)",
     ))
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(&format!(
-        "UPDATE inventory SET quantity = quantity + 1 WHERE user_id = {user_id} AND item_id = {item_id}"
+        "UPDATE item SET quantity = quantity + 1 WHERE user_id = {user_id} AND item_id = {item_id}",
     ))
     .execute(pool)
     .await
@@ -379,11 +420,11 @@ async fn raking(
     }
     update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
     if let Some(item) = match random_range(0..10000) {
-        q if q < 500 => Some(Item::LeafHandful),   // 5%
-        q if q < 600 => Some(Item::LeafPile),      // 1%
-        q if q < 625 => Some(Item::LeafBucket),    // .25%
-        q if q < 630 => Some(Item::LeafBarrel),    // .05%
-        q if q < 631 => Some(Item::LeafTruckload), // .01%
+        q if q < 500 => Some(BaseItem::LeafHandful),   // 5%
+        q if q < 600 => Some(BaseItem::LeafPile),      // 1%
+        q if q < 625 => Some(BaseItem::LeafBucket),    // .25%
+        q if q < 630 => Some(BaseItem::LeafBarrel),    // .05%
+        q if q < 631 => Some(BaseItem::LeafTruckload), // .01%
         _ => None,
     } {
         embed = embed.field(
@@ -394,7 +435,16 @@ async fn raking(
             ),
             true,
         );
-        add_item(user_id, item as i32, get_pool!(ctx)).await;
+        add_item(
+            user_id,
+            Item {
+                base: item,
+                quality: None,
+                modifier: None,
+            },
+            get_pool!(ctx),
+        )
+        .await;
     }
     builder.embed(embed)
 }
@@ -427,6 +477,31 @@ impl<T> Choice<T> for [T] {
     }
 }
 
+fn handle_help(input: &str) -> CreateEmbed {
+    match input {
+        "rake" | "r" => CreateEmbed::new()
+            .title("`rake` (alias: `r`)")
+            .description("The basic command to rake and obtain Leaves.")
+            .color(DARK_GREEN)
+            .field("Details", "**exp**:\n`5`-`10`\n\
+                **Leaves**:\n`(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n\
+                **cooldown**:\n`(30 + <rake size>)` seconds", false)
+            .field("Drops", GIFT_DROPCHANCE, false),
+        "riskyRake" | "rr" => CreateEmbed::new()
+            .title("`riskyRake` (alias: `rr`)")
+            .description("The risky version of raking to obtain or lose Leaves.")
+            .color(DARK_GREEN)
+            .field("Details", "**exp**:\n`-10`-`40`\n\
+                **Leaves**:\n`(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n\
+                **cooldown**:\n`(60 + 2 * <rake size>)` seconds", false)
+            .field("Drops", GIFT_DROPCHANCE, false),
+        _ => CreateEmbed::new()
+            .title(format!("What's `{input}`?"))
+            .description("I don't have that command, try `oi help` to see available commands.")
+            .color(DARK_RED)
+    }
+}
+
 struct Handler;
 
 #[async_trait]
@@ -440,31 +515,11 @@ impl EventHandler for Handler {
             Some(rest) => rest,
             None => return,
         };
+        let user_id = msg.author.id.get() as i64;
         let mut builder = CreateMessage::new();
         builder = match content.split_once(" ") {
             Some((command, input)) => match command {
-                "help" => match input {
-                    "rake" | "r" => builder.embed(CreateEmbed::new()
-                        .title("`rake` (alias: `r`)")
-                        .description("The basic command to rake and obtain Leaves.")
-                        .color(DARK_GREEN)
-                        .field("Details", "**exp**:\n`5`-`10`\n\
-                            **Leaves**:\n`(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n\
-                            **cooldown**:\n`(30 + <rake size>)` seconds", false)
-                        .field("Drops", GIFT_DROPCHANCE, false)),
-                    "riskyRake" | "rr" => builder.embed(CreateEmbed::new()
-                        .title("`riskyRake` (alias: `rr`)")
-                        .description("The risky version of raking to obtain or lose Leaves.")
-                        .color(DARK_GREEN)
-                        .field("Details", "**exp**:\n`-10`-`40`\n\
-                            **Leaves**:\n`(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n\
-                            **cooldown**:\n`(60 + 2 * <rake size>)` seconds", false)
-                        .field("Drops", GIFT_DROPCHANCE, false)),
-                    _ => builder.embed(CreateEmbed::new()
-                        .title(format!("What's `{input}`?"))
-                        .description("I don't have that command, try `oi help` to see available commands.")
-                        .color(DARK_RED))
-                }
+                "help" => builder.embed(handle_help(input)),
                 "say" | "say," => builder.embed(CreateEmbed::new()
                     .title("Question")
                     .description(input)
@@ -511,19 +566,15 @@ impl EventHandler for Handler {
                 "daily" => {
                     raking(&ctx, &msg, builder, RakeType::Daily).await
                 }
-                "inventory" | "inv" => {
-                    let user_id = msg.author.id.get() as i64;
-                    builder.embed(CreateEmbed::new()
+                "inventory" | "inv" => builder.embed(CreateEmbed::new()
                     .title("Your Inventory")
-                    .description(get_inventory(user_id, get_pool!(ctx)).await
+                    .description(get_item(user_id, get_pool!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
-                            format!("{quantity} of {}", Item::from(item_id).unwrap().as_str()))
+                            format!("{quantity} of {}", BaseItem::from(item_id).unwrap().as_str()))
                         .collect::<Vec<_>>().join("\n")
                         + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
-                    .color(DARK_GREEN))
-                }
+                    .color(DARK_GREEN)),
                 "passives" => {
-                    let user_id = msg.author.id.get() as i64;
                     let passives = get_passives(user_id, msg.timestamp.timestamp(), get_pool!(ctx)).await;
                     builder.embed(CreateEmbed::new()
                     .title(format!("You currently have {} passives", passives.len()))
@@ -533,6 +584,16 @@ impl EventHandler for Handler {
                             (format!("{} (expires <t:{time}:R>)", p.as_str()), p.as_desc(), false)
                         }))
                     .color(DARK_GREEN))
+                }
+                "shop" => {
+                    let refresh_time = msg.timestamp.timestamp() + 86400;
+                    let leaves = get_from_user("leaves", user_id, get_pool!(ctx)).await.to_string();
+                    builder.embed(CreateEmbed::new()
+                        .title("Equipments for sale")
+                        .description("Empty for now, check back later!")
+                        .field("Consumables on sale", "Empty for now, check back later!", false)
+                        .field("Info", format!("`Your Leaves: {leaves}`\nShop refreshes <t:{refresh_time}:R>."), false)
+                        .color(DARK_GREEN))
                 }
                 "leaderboard" | "lb" => {
                     let loading_msg = msg.channel_id.send_message(&ctx.http,
