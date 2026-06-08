@@ -1,4 +1,5 @@
-use rand::{random_bool, random_range};
+use crate::{BaseItem::*, Limb::*};
+use rand::{SeedableRng, random_bool, random_range, rngs::StdRng, seq::IndexedRandom};
 use serenity::{
     all::{
         Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
@@ -83,34 +84,325 @@ enum Modifier {
     Legendary,
 }
 
+#[derive(Debug, Clone)]
 enum BaseItem {
     LeafHandful,
     LeafPile,
     LeafBucket,
     LeafBarrel,
     LeafTruckload,
+    TankTop,
+    Tshirt,
+    Sneaker,
+    Shorts,
+    BaseballCap,
+    PropellerHat,
+    Sweater,
+    Hoodie,
+    Jacket,
+    Coat,
+    LatexGlove,
+    CottonGlove,
+    LeatherGlove,
+    ArmSleeve,
+    LegSleeve,
+    PaperKnife,
+    TreeStick,
+    BrassKnuckles,
+    SpikedBrassKnuckles,
+    BladedBrassKnuckles,
+    Orangeberries,
+    PenPineappleApplePen,
+    HealthPotion,
+    InstantRamen,
+    Ramen,
+    CarolinaReaperRamen,
+    Milk,
+    FriedSnow,
 }
 
 impl BaseItem {
     fn from(id: i32) -> Option<Self> {
         match id {
-            v if v == BaseItem::LeafHandful as i32 => Some(BaseItem::LeafHandful),
-            v if v == BaseItem::LeafPile as i32 => Some(BaseItem::LeafPile),
-            v if v == BaseItem::LeafBucket as i32 => Some(BaseItem::LeafBucket),
-            v if v == BaseItem::LeafBarrel as i32 => Some(BaseItem::LeafBarrel),
-            v if v == BaseItem::LeafTruckload as i32 => Some(BaseItem::LeafTruckload),
+            v if v == LeafHandful as i32 => Some(LeafHandful),
+            v if v == LeafPile as i32 => Some(LeafPile),
+            v if v == LeafBucket as i32 => Some(LeafBucket),
+            v if v == LeafBarrel as i32 => Some(LeafBarrel),
+            v if v == LeafTruckload as i32 => Some(LeafTruckload),
             _ => None,
         }
     }
 
     fn as_str(&self) -> &'static str {
         match self {
-            BaseItem::LeafHandful => "Handful of Leaves",
-            BaseItem::LeafPile => "Pile of Leaves",
-            BaseItem::LeafBucket => "Bucket of Leaves",
-            BaseItem::LeafBarrel => "Barrel of Leaves",
-            BaseItem::LeafTruckload => "Truckload of Leaves",
+            LeafHandful => "Handful of Leaves",
+            LeafPile => "Pile of Leaves",
+            LeafBucket => "Bucket of Leaves",
+            LeafBarrel => "Barrel of Leaves",
+            LeafTruckload => "Truckload of Leaves",
+            TankTop => "Tank Top",
+            Tshirt => "Tshirt",
+            Sneaker => "Sneaker",
+            Shorts => "Shorts",
+            BaseballCap => "Baseball Cap",
+            PropellerHat => "Propeller Hat",
+            Sweater => "Sweater",
+            Hoodie => "Hoodie",
+            Jacket => "Jacket",
+            Coat => "Coat",
+            LatexGlove => "Latex Glove",
+            CottonGlove => "Cotton Glove",
+            LeatherGlove => "Leather Glove",
+            ArmSleeve => "Arm Sleeve",
+            LegSleeve => "Leg Sleeve",
+            PaperKnife => "Paper Knife",
+            TreeStick => "Tree Stick",
+            BrassKnuckles => "Brass Knuckles",
+            SpikedBrassKnuckles => "Spiked Brass Knuckles",
+            BladedBrassKnuckles => "Bladed Brass Knuckles",
+            Orangeberries => "Orangeberries",
+            PenPineappleApplePen => "Pen Pineapple Apple Pen",
+            HealthPotion => "Health Potion",
+            InstantRamen => "Instant Ramen",
+            Ramen => "Ramen",
+            CarolinaReaperRamen => "Carolina Reaper Ramen",
+            Milk => "Milk",
+            FriedSnow => "Fried Snow",
         }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            LeafHandful => "It's a handful of leaves! Mind if I take some?",
+            LeafPile => "Are you really just gonna ***leave*** them on the ground like that?",
+            LeafBucket => "A bucket o' leaves.",
+            LeafBarrel => "Currency in an alcohol container.",
+            LeafTruckload => "So much leaves that you can swim in them!",
+            TankTop => "Does not come with a turret.",
+            Tshirt => "A normal T-shirt. Luckily, you don't have to wash it everyday.",
+            Sneaker => "A shoe for your foot. Nothing remarkable.",
+            Shorts => "Too short for you? That's too bad.",
+            BaseballCap => "No cap, this is a cap.",
+            PropellerHat => "\"Become an attack helicopter today!\"",
+            Sweater => "A pink sweater, made by a grandma's love and care.",
+            Hoodie => "Gangster enough to give you some fighting spirit.",
+            Jacket => "Who is Jack why are they et.",
+            Coat => "Oh wait, that diamond on the zipper is fake...",
+            LatexGlove => "You're not going to use it more than once, are you...?",
+            CottonGlove => "Perfect for the winter season.",
+            LeatherGlove => "Gangsta.",
+            ArmSleeve => "Your best companion for normal workouts.",
+            LegSleeve => "Prevent shin splits",
+            PaperKnife => "Don't underestimate the power of paper cuts.",
+            TreeStick => {
+                "Instead of using it as fire fuel, you're gonna swing it around like a madman, aren't you?"
+            }
+            BrassKnuckles => "Dangerous if used in the wrong hands",
+            SpikedBrassKnuckles => "Quite spikey.",
+            BladedBrassKnuckles => "Punch and cut at the same time. Win-win.",
+            Orangeberries => "Tastes exactly the opposite of blueberries.",
+            PenPineappleApplePen => {
+                "I don't have a pen\nI don't have an apple\nno apple pen!\nI don't have a pen\nI don't have pineapple\nno pineapple pen!\nNo apple pen, no pineaple pen, no pen pineapple apple pen!\nNo pen pineapple apple pen!"
+            }
+            HealthPotion => "A classic consumable item.",
+            InstantRamen => "Don't tell me you're going to eat it dry?",
+            Ramen => "Steaming hot, but not spicy hot.",
+            CarolinaReaperRamen => "You have a death wish if you want to eat this abomination.",
+            Milk => "Dad went to get milk, but never came back. Did you see him on the way?",
+            FriedSnow => "It's got too much sentimental value to be eaten... or does it?",
+        }
+    }
+
+    fn buying_price(&self) -> i32 {
+        match self {
+            LeafHandful => 20,
+            LeafPile => 100,
+            LeafBucket => 400,
+            LeafBarrel => 2000,
+            LeafTruckload => 10000,
+            TankTop => 10,
+            Tshirt => 10,
+            Sneaker => 20,
+            Shorts => 30,
+            BaseballCap => 10,
+            PropellerHat => 50,
+            Sweater => 100,
+            Hoodie => 200,
+            Jacket => 450,
+            Coat => 1999,
+            LatexGlove => 1,
+            CottonGlove => 30,
+            LeatherGlove => 50,
+            ArmSleeve => 25,
+            LegSleeve => 30,
+            PaperKnife => 5,
+            TreeStick => 20,
+            BrassKnuckles => 150,
+            SpikedBrassKnuckles => 400,
+            BladedBrassKnuckles => 999,
+            Orangeberries => 20,
+            PenPineappleApplePen => 50,
+            HealthPotion => 100,
+            InstantRamen => 5,
+            Ramen => 150,
+            CarolinaReaperRamen => 666,
+            Milk => 250,
+            FriedSnow => 99999,
+        }
+    }
+
+    fn selling_price(&self) -> i32 {
+        match self {
+            LeafHandful => 20,
+            LeafPile => 100,
+            LeafBucket => 400,
+            LeafBarrel => 2000,
+            LeafTruckload => 10000,
+            TankTop => 5,
+            Tshirt => 5,
+            Sneaker => 10,
+            Shorts => 15,
+            BaseballCap => 5,
+            PropellerHat => 25,
+            Sweater => 50,
+            Hoodie => 100,
+            Jacket => 200,
+            Coat => 50,
+            LatexGlove => 0,
+            CottonGlove => 10,
+            LeatherGlove => 20,
+            ArmSleeve => 5,
+            LegSleeve => 5,
+            PaperKnife => 0,
+            TreeStick => 0,
+            BrassKnuckles => 100,
+            SpikedBrassKnuckles => 300,
+            BladedBrassKnuckles => 666,
+            Orangeberries => 15,
+            PenPineappleApplePen => 40,
+            HealthPotion => 100,
+            InstantRamen => 5,
+            Ramen => 100,
+            CarolinaReaperRamen => 444,
+            Milk => 200,
+            FriedSnow => -99999,
+        }
+    }
+
+    fn equipable_limbs(&self) -> Vec<Limb> {
+        match self {
+            TankTop => vec![Torso],
+            Tshirt => vec![Torso, LeftUpperArm, RightUpperArm],
+            Sweater | Hoodie | Jacket | Coat => vec![
+                Torso,
+                LeftUpperArm,
+                RightUpperArm,
+                LeftLowerArm,
+                RightLowerArm,
+            ],
+            Sneaker => vec![LeftFoot, RightFoot],
+            Shorts => vec![LeftUpperLeg, RightUpperLeg],
+            BaseballCap | PropellerHat => vec![Head],
+            LatexGlove | CottonGlove | LeatherGlove => vec![LeftHand, RightHand],
+            ArmSleeve => vec![LeftLowerArm, RightLowerArm],
+            LegSleeve => vec![LeftLowerLeg, RightLowerLeg],
+            _ => vec![],
+        }
+    }
+
+    fn equipments() -> [Self; 15] {
+        [
+            TankTop,
+            Tshirt,
+            Sweater,
+            Hoodie,
+            Jacket,
+            Coat,
+            Sneaker,
+            Shorts,
+            BaseballCap,
+            PropellerHat,
+            LatexGlove,
+            CottonGlove,
+            LeatherGlove,
+            ArmSleeve,
+            LegSleeve,
+        ]
+    }
+
+    fn weapons() -> [Self; 5] {
+        [
+            PaperKnife,
+            TreeStick,
+            BrassKnuckles,
+            SpikedBrassKnuckles,
+            BladedBrassKnuckles,
+        ]
+    }
+
+    fn consumables() -> [Self; 8] {
+        [
+            Orangeberries,
+            PenPineappleApplePen,
+            HealthPotion,
+            InstantRamen,
+            Ramen,
+            CarolinaReaperRamen,
+            Milk,
+            FriedSnow,
+        ]
+    }
+
+    fn weight(&self) -> u8 {
+        match self {
+            TankTop => 64,
+            Tshirt => 64,
+            Sweater => 16,
+            Hoodie => 16,
+            Jacket => 8,
+            Coat => 8,
+            Sneaker => 16,
+            Shorts => 16,
+            BaseballCap => 8,
+            PropellerHat => 2,
+            LatexGlove => 16,
+            CottonGlove => 8,
+            LeatherGlove => 8,
+            ArmSleeve => 8,
+            LegSleeve => 8,
+            PaperKnife => 64,
+            TreeStick => 64,
+            BrassKnuckles => 32,
+            SpikedBrassKnuckles => 16,
+            BladedBrassKnuckles => 8,
+            Orangeberries => 64,
+            PenPineappleApplePen => 16,
+            HealthPotion => 32,
+            InstantRamen => 32,
+            Ramen => 16,
+            CarolinaReaperRamen => 8,
+            Milk => 64,
+            FriedSnow => 4,
+            _ => 0,
+        }
+    }
+}
+
+trait ShopRep {
+    fn shop_rep(&self, start: u8) -> String;
+}
+
+impl ShopRep for Vec<BaseItem> {
+    fn shop_rep(&self, start: u8) -> String {
+        let mut result = String::new();
+        for item in self {
+            result += &format!(
+                "{start}. `{:<24}{:>6} Leaves`\n",
+                item.as_str(),
+                item.buying_price()
+            )
+        }
+        result
     }
 }
 
@@ -121,6 +413,26 @@ struct Item {
 }
 
 type Shop = Vec<Item>;
+
+fn get_shop(seed: u64) -> (Vec<BaseItem>, Vec<BaseItem>, Vec<BaseItem>) {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let equipments = BaseItem::equipments()
+        .sample_weighted(&mut rng, 4, |item| item.weight())
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>();
+    let weapons = BaseItem::weapons()
+        .sample_weighted(&mut rng, 2, |item| item.weight())
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>();
+    let consumables = BaseItem::consumables()
+        .sample_weighted(&mut rng, 3, |item| item.weight())
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>();
+    (equipments, weapons, consumables)
+}
 
 enum Passive {
     Lucky,
@@ -420,11 +732,11 @@ async fn raking(
     }
     update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
     if let Some(item) = match random_range(0..10000) {
-        q if q < 500 => Some(BaseItem::LeafHandful),   // 5%
-        q if q < 600 => Some(BaseItem::LeafPile),      // 1%
-        q if q < 625 => Some(BaseItem::LeafBucket),    // .25%
-        q if q < 630 => Some(BaseItem::LeafBarrel),    // .05%
-        q if q < 631 => Some(BaseItem::LeafTruckload), // .01%
+        q if q < 500 => Some(LeafHandful),   // 5%
+        q if q < 600 => Some(LeafPile),      // 1%
+        q if q < 625 => Some(LeafBucket),    // .25%
+        q if q < 630 => Some(LeafBarrel),    // .05%
+        q if q < 631 => Some(LeafTruckload), // .01%
         _ => None,
     } {
         embed = embed.field(
@@ -586,12 +898,14 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN))
                 }
                 "shop" => {
-                    let refresh_time = msg.timestamp.timestamp() + 86400;
+                    let refresh_time = (msg.timestamp.timestamp() as u64 / 86400 + 1) * 86400;
                     let leaves = get_from_user("leaves", user_id, get_pool!(ctx)).await.to_string();
+                    let (equipments, weapons, consumables) = get_shop(refresh_time);
                     builder.embed(CreateEmbed::new()
                         .title("Equipments for sale")
-                        .description("Empty for now, check back later!")
-                        .field("Consumables on sale", "Empty for now, check back later!", false)
+                        .description(equipments.shop_rep(1))
+                        .field("Weapons on sale", weapons.shop_rep(5), false)
+                        .field("Consumables on sale", consumables.shop_rep(7), false)
                         .field("Info", format!("`Your Leaves: {leaves}`\nShop refreshes <t:{refresh_time}:R>."), false)
                         .color(DARK_GREEN))
                 }
