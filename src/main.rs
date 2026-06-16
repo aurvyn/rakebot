@@ -48,6 +48,12 @@ macro_rules! get_pool {
     };
 }
 
+macro_rules! get_owner_id {
+    ($ctx:expr) => {
+        $ctx.data.read().await.get::<OwnerId>().unwrap()
+    };
+}
+
 enum RakeType {
     Normal,
     Risky,
@@ -130,44 +136,6 @@ impl BaseItem {
             v if v == LeafBarrel as i32 => Some(LeafBarrel),
             v if v == LeafTruckload as i32 => Some(LeafTruckload),
             _ => None,
-        }
-    }
-
-    fn as_str(&self) -> &'static str {
-        match self {
-            LeafHandful => "Handful of Leaves",
-            LeafPile => "Pile of Leaves",
-            LeafBucket => "Bucket of Leaves",
-            LeafBarrel => "Barrel of Leaves",
-            LeafTruckload => "Truckload of Leaves",
-            TankTop => "Tank Top",
-            Tshirt => "Tshirt",
-            Sneaker => "Sneaker",
-            Shorts => "Shorts",
-            BaseballCap => "Baseball Cap",
-            PropellerHat => "Propeller Hat",
-            Sweater => "Sweater",
-            Hoodie => "Hoodie",
-            Jacket => "Jacket",
-            Coat => "Coat",
-            LatexGlove => "Latex Glove",
-            CottonGlove => "Cotton Glove",
-            LeatherGlove => "Leather Glove",
-            ArmSleeve => "Arm Sleeve",
-            LegSleeve => "Leg Sleeve",
-            PaperKnife => "Paper Knife",
-            TreeStick => "Tree Stick",
-            BrassKnuckles => "Brass Knuckles",
-            SpikedBrassKnuckles => "Spiked Brass Knuckles",
-            BladedBrassKnuckles => "Bladed Brass Knuckles",
-            Orangeberries => "Orangeberries",
-            PenPineappleApplePen => "Pen Pineapple Apple Pen",
-            HealthPotion => "Health Potion",
-            InstantRamen => "Instant Ramen",
-            Ramen => "Ramen",
-            CarolinaReaperRamen => "Carolina Reaper Ramen",
-            Milk => "Milk",
-            FriedSnow => "Fried Snow",
         }
     }
 
@@ -388,6 +356,47 @@ impl BaseItem {
     }
 }
 
+impl std::fmt::Display for BaseItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeafHandful => "Handful of Leaves",
+            LeafPile => "Pile of Leaves",
+            LeafBucket => "Bucket of Leaves",
+            LeafBarrel => "Barrel of Leaves",
+            LeafTruckload => "Truckload of Leaves",
+            TankTop => "Tank Top",
+            Tshirt => "Tshirt",
+            Sneaker => "Sneaker",
+            Shorts => "Shorts",
+            BaseballCap => "Baseball Cap",
+            PropellerHat => "Propeller Hat",
+            Sweater => "Sweater",
+            Hoodie => "Hoodie",
+            Jacket => "Jacket",
+            Coat => "Coat",
+            LatexGlove => "Latex Glove",
+            CottonGlove => "Cotton Glove",
+            LeatherGlove => "Leather Glove",
+            ArmSleeve => "Arm Sleeve",
+            LegSleeve => "Leg Sleeve",
+            PaperKnife => "Paper Knife",
+            TreeStick => "Tree Stick",
+            BrassKnuckles => "Brass Knuckles",
+            SpikedBrassKnuckles => "Spiked Brass Knuckles",
+            BladedBrassKnuckles => "Bladed Brass Knuckles",
+            Orangeberries => "Orangeberries",
+            PenPineappleApplePen => "Pen Pineapple Apple Pen",
+            HealthPotion => "Health Potion",
+            InstantRamen => "Instant Ramen",
+            Ramen => "Ramen",
+            CarolinaReaperRamen => "Carolina Reaper Ramen",
+            Milk => "Milk",
+            FriedSnow => "Fried Snow",
+        }
+        .fmt(f)
+    }
+}
+
 trait ShopRep {
     fn shop_rep(&self, start: u8) -> String;
 }
@@ -396,11 +405,7 @@ impl ShopRep for Vec<BaseItem> {
     fn shop_rep(&self, start: u8) -> String {
         let mut result = String::new();
         for item in self {
-            result += &format!(
-                "{start}. `{:<24}{:>6} Leaves`\n",
-                item.as_str(),
-                item.buying_price()
-            )
+            result += &format!("{start}. `{item:<24}{:>6} Leaves`\n", item.buying_price())
         }
         result
     }
@@ -412,25 +417,31 @@ struct Item {
     modifier: Option<Modifier>,
 }
 
+impl Item {
+    fn from_base(base: BaseItem) -> Self {
+        Item {
+            base,
+            quality: None,
+            modifier: None,
+        }
+    }
+}
+
 type Shop = Vec<Item>;
 
+fn sample_items(rng: &mut StdRng, amount: usize, items: &[BaseItem]) -> Vec<BaseItem> {
+    items
+        .sample_weighted(rng, amount, |item| item.weight())
+        .unwrap()
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
 fn get_shop(seed: u64) -> (Vec<BaseItem>, Vec<BaseItem>, Vec<BaseItem>) {
-    let mut rng = StdRng::seed_from_u64(seed);
-    let equipments = BaseItem::equipments()
-        .sample_weighted(&mut rng, 4, |item| item.weight())
-        .unwrap()
-        .cloned()
-        .collect::<Vec<_>>();
-    let weapons = BaseItem::weapons()
-        .sample_weighted(&mut rng, 2, |item| item.weight())
-        .unwrap()
-        .cloned()
-        .collect::<Vec<_>>();
-    let consumables = BaseItem::consumables()
-        .sample_weighted(&mut rng, 3, |item| item.weight())
-        .unwrap()
-        .cloned()
-        .collect::<Vec<_>>();
+    let ref mut rng = StdRng::seed_from_u64(seed);
+    let equipments = sample_items(rng, 4, &BaseItem::equipments());
+    let weapons = sample_items(rng, 2, &BaseItem::weapons());
+    let consumables = sample_items(rng, 3, &BaseItem::consumables());
     (equipments, weapons, consumables)
 }
 
@@ -447,14 +458,6 @@ impl Passive {
             v if v == Passive::LuckyZero as i32 => Some(Passive::LuckyZero),
             v if v == Passive::Unlucky as i32 => Some(Passive::Unlucky),
             _ => None,
-        }
-    }
-
-    fn as_str(&self) -> &'static str {
-        match self {
-            Passive::Lucky => "Lucky!",
-            Passive::LuckyZero => "Luck o' Clock!",
-            Passive::Unlucky => "Unlucky...",
         }
     }
 
@@ -484,9 +487,25 @@ impl Passive {
     }
 }
 
+impl std::fmt::Display for Passive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Passive::Lucky => "Lucky!",
+            Passive::LuckyZero => "Luck o' Clock!",
+            Passive::Unlucky => "Unlucky...",
+        }
+        .fmt(f)
+    }
+}
+
 struct DbPool;
 impl TypeMapKey for DbPool {
     type Value = SqlitePool;
+}
+
+struct OwnerId;
+impl TypeMapKey for OwnerId {
+    type Value = i64;
 }
 
 async fn try_create_tables(pool: &SqlitePool) {
@@ -509,8 +528,8 @@ async fn try_create_tables(pool: &SqlitePool) {
             user_id  INTEGER NOT NULL,
             item_id  INTEGER NOT NULL,
             quantity INTEGER NOT NULL DEFAULT 0,
-            quality  INTEGER,
-            modifier INTEGER,
+            quality  INTEGER NOT NULL DEFAULT 0,
+            modifier INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, item_id, quality, modifier),
             FOREIGN KEY (user_id) REFERENCES user(id)
         )",
@@ -626,7 +645,8 @@ async fn add_item(user_id: i64, item: Item, pool: &SqlitePool) {
     .unwrap();
 }
 
-async fn add_passive(user_id: i64, expires_at: i64, passive_id: i32, pool: &SqlitePool) {
+async fn add_passive(user_id: i64, expires_at: i64, passive: Passive, pool: &SqlitePool) {
+    let passive_id = passive as i32;
     sqlx::query(&format!(
         "INSERT OR IGNORE INTO passive (user_id, passive_id, expires_at) VALUES ({user_id}, {passive_id}, 0)"
     ))
@@ -692,7 +712,7 @@ async fn raking(
                 Passive::from(*passive_id).and_then(|p| {
                     let (min, max, mult, chance) = p.modifiers();
                     if random_bool(chance) {
-                        Some((p.as_str(), min, max, mult))
+                        Some((p, min, max, mult))
                     } else {
                         None
                     }
@@ -700,7 +720,9 @@ async fn raking(
             })
             .fold(
                 (String::new(), 1., 1., 1.),
-                |(names, a, b, c), (name, x, y, z)| (names + "\n- " + name, a + x, b + y, c + z),
+                |(names, a, b, c), (name, x, y, z)| {
+                    (names + "\n- " + &name.to_string(), a + x, b + y, c + z)
+                },
             );
     let mut leaves = (random_range((leaves_start * min).round()..(leaves_end * max).round()) * mult)
         .round() as i32;
@@ -721,14 +743,8 @@ async fn raking(
         } else {
             Passive::Unlucky
         };
-        embed = embed.field(passive.as_str(), passive.as_desc(), false);
-        add_passive(
-            user_id,
-            time + passive.duration(),
-            passive as i32,
-            get_pool!(ctx),
-        )
-        .await;
+        embed = embed.field(passive.to_string(), passive.as_desc(), false);
+        add_passive(user_id, time + passive.duration(), passive, get_pool!(ctx)).await;
     }
     update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
     if let Some(item) = match random_range(0..10000) {
@@ -741,22 +757,10 @@ async fn raking(
     } {
         embed = embed.field(
             "Bonus",
-            format!(
-                "You also found a `{}`!\n*It is now in your inventory.*",
-                item.as_str()
-            ),
+            format!("You also found a `{item}`!\n*It is now in your inventory.*",),
             true,
         );
-        add_item(
-            user_id,
-            Item {
-                base: item,
-                quality: None,
-                modifier: None,
-            },
-            get_pool!(ctx),
-        )
-        .await;
+        add_item(user_id, Item::from_base(item), get_pool!(ctx)).await;
     }
     builder.embed(embed)
 }
@@ -814,6 +818,152 @@ fn handle_help(input: &str) -> CreateEmbed {
     }
 }
 
+fn handle_owner_help() -> CreateEmbed {
+    CreateEmbed::new()
+        .title("Gaia Commands")
+        .description("Codename Gaia. Heed commands from her director.")
+        .color(DARK_GREEN)
+        .fields(vec![
+            (
+                "`give`",
+                "Gives an item to a user.\n- `oi gaia give <user_id> <item_id>`",
+                false,
+            ),
+            (
+                "`apply`",
+                "Applies a passive to a user.\n- `oi gaia apply <user_id> <passive_id> <duration>`",
+                false,
+            ),
+            (
+                "`bless`",
+                "Provides exp and Leaves to a user.\n- `oi gaia bless <user_id> <exp> <leaves>`",
+                false,
+            ),
+            ("`help`", "Displays this command.", false),
+        ])
+        .footer(CreateEmbedFooter::new("May your backyard be full of Leaves.").icon_url(ICON_URL))
+}
+
+async fn handle_owner_commands(
+    ctx: &Context,
+    user_id: i64,
+    timestamp: i64,
+    input: &str,
+) -> CreateEmbed {
+    if get_owner_id!(ctx) == &user_id {
+        match input.split_once(" ") {
+            Some((command, args)) => match command {
+                "give" => match args.split_once(" ") {
+                    Some((receiver_id, item_id)) => {
+                        if let Ok(user_id) = receiver_id.parse()
+                            && let Ok(item) = item_id.parse()
+                            && let Ok(user) = UserId::new(user_id).to_user(&ctx).await
+                            && let Some(base) = BaseItem::from(item)
+                        {
+                            let embed = CreateEmbed::new()
+                                .title("Item Granted")
+                                .description(format!("{} has received `{base}`.", user.name))
+                                .color(DARK_GREEN);
+                            add_item(user_id as i64, Item::from_base(base), get_pool!(ctx)).await;
+                            embed
+                        } else {
+                            CreateEmbed::new()
+                                .title("Gaia is Confused by Your Demands")
+                                .description("She does not recognize the user ID or item ID.")
+                                .color(DARK_RED)
+                        }
+                    }
+                    _ => CreateEmbed::new()
+                        .title("Gaia is Confused by Your Demands")
+                        .description("She does not sense an item ID.")
+                        .color(DARK_GREEN),
+                },
+                "apply" => match args.splitn(3, " ").collect::<Vec<_>>()[..] {
+                    [receiver_id, passive_id, seconds] => {
+                        if let Ok(user_id) = receiver_id.parse()
+                            && let Ok(passive) = passive_id.parse()
+                            && let Ok(duration) = seconds.parse::<i64>()
+                            && let Ok(user) = UserId::new(user_id).to_user(&ctx).await
+                            && let Some(passive) = Passive::from(passive)
+                        {
+                            let expires_at = timestamp + duration;
+                            let embed = CreateEmbed::new()
+                                .title("Passive Granted")
+                                .description(format!(
+                                    "Inflicted {} with `{passive}` until <t:{expires_at}:R>.",
+                                    user.name
+                                ))
+                                .color(DARK_GREEN);
+                            add_passive(user_id as i64, expires_at, passive, get_pool!(ctx)).await;
+                            embed
+                        } else {
+                            CreateEmbed::new()
+                                .title("Gaia is Confused by Your Demands")
+                                .description("She does not recognize the user/passive ID or time.")
+                                .color(DARK_RED)
+                        }
+                    }
+                    _ => CreateEmbed::new()
+                        .title("Gaia is Confused by Your Demands")
+                        .description("She does not sense user/passive ID or time.")
+                        .color(DARK_RED),
+                },
+                "bless" => match args.splitn(3, " ").collect::<Vec<_>>()[..] {
+                    [receiver_id, xp, amount] => {
+                        if let Ok(user_id) = receiver_id.parse()
+                            && let Ok(exp) = xp.parse()
+                            && let Ok(leaves) = amount.parse()
+                            && let Ok(user) = UserId::new(user_id).to_user(&ctx).await
+                        {
+                            update_raking(
+                                user_id as i64,
+                                exp,
+                                leaves,
+                                "last_raked",
+                                timestamp,
+                                get_pool!(ctx),
+                            )
+                            .await;
+                            CreateEmbed::new()
+                                .title("Wish Granted")
+                                .description(format!(
+                                    "{} has received `{exp} exp` and `{leaves} Leaves`.",
+                                    user.name
+                                ))
+                                .color(DARK_GREEN)
+                        } else {
+                            CreateEmbed::new()
+                                .title("Gaia is Confused by Your Demands")
+                                .description("She does not recognize the user ID or exp/Leaves.")
+                                .color(DARK_RED)
+                        }
+                    }
+                    _ => CreateEmbed::new()
+                        .title("Gaia is Confused by Your Demands")
+                        .description("She does not sense user ID or exp/Leaves amount.")
+                        .color(DARK_RED),
+                },
+                _ => CreateEmbed::new()
+                    .title("Gaia is Confused by Your Command")
+                    .description(format!("She does not recognize `{command}`."))
+                    .color(DARK_RED),
+            },
+            None => match input {
+                "help" => handle_owner_help(),
+                _ => CreateEmbed::new()
+                    .title("Gaia is Confused by Your Command")
+                    .description(format!("She does not recognize `{input}`."))
+                    .color(DARK_RED),
+            },
+        }
+    } else {
+        CreateEmbed::new()
+            .title("Access Denied")
+            .description("You do not have the permissions for this command.")
+            .color(DARK_RED)
+    }
+}
+
 struct Handler;
 
 #[async_trait]
@@ -838,6 +988,10 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .field("Answer", *RESPONSES.choice(input), true)),
                 "speak" => builder.content(input).allowed_mentions(CreateAllowedMentions::new()),
+                // Bot owner exclusive command
+                "gaia" => {
+                    builder.embed(handle_owner_commands(&ctx, user_id, msg.timestamp.timestamp(), input).await)
+                }
                 _ => builder.embed(CreateEmbed::new()
                     .title(format!("What's `{command}`?"))
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
@@ -882,7 +1036,7 @@ impl EventHandler for Handler {
                     .title("Your Inventory")
                     .description(get_item(user_id, get_pool!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
-                            format!("{quantity} of {}", BaseItem::from(item_id).unwrap().as_str()))
+                            format!("{quantity} of {}", BaseItem::from(item_id).unwrap()))
                         .collect::<Vec<_>>().join("\n")
                         + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
                     .color(DARK_GREEN)),
@@ -893,7 +1047,7 @@ impl EventHandler for Handler {
                     .fields(passives
                         .into_iter().map(|(passive_id, time)| {
                             let p = Passive::from(passive_id).unwrap();
-                            (format!("{} (expires <t:{time}:R>)", p.as_str()), p.as_desc(), false)
+                            (format!("{p} (expires <t:{time}:R>)"), p.as_desc(), false)
                         }))
                     .color(DARK_GREEN))
                 }
@@ -933,7 +1087,7 @@ impl EventHandler for Handler {
                     builder.embed(embed)
                 }
                 _ => builder.embed(CreateEmbed::new()
-                    .title("What?")
+                    .title(format!("What's `{content}`?"))
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
                     .color(DARK_RED))
             }
@@ -970,10 +1124,15 @@ async fn main() {
     )
     .await
     .expect("Couldn't connect to Rake's DB");
+    let owner_id = env::var("OWNER_ID")
+        .expect("Expected owner ID in the environment")
+        .parse::<i64>()
+        .expect("Owner ID in the environment is in invalid format");
     try_create_tables(&pool).await;
     {
         let mut data = client.data.write().await;
         data.insert::<DbPool>(pool);
+        data.insert::<OwnerId>(owner_id);
     }
 
     // Finally, start a single shard, and start listening to events.
