@@ -7,4 +7,5 @@ edition = "2024"
 rand = { version = "0.10.1", features = [ "thread_rng" ] }
 serenity = "0.12.5"
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "sqlite" ] }
+strum = { version = "0.28.0", features = [ "derive" ] }
 tokio = { version = "1.52.2", features = ["rt-multi-thread"] }

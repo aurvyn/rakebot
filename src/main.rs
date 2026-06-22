@@ -11,7 +11,12 @@ use serenity::{
     prelude::TypeMapKey,
 };
 use sqlx::SqlitePool;
-use std::{env, fs::File};
+use std::{env, fs::File, str::FromStr};
+
+type ItemId = u32;
+type PassiveId = u32;
+type QualityId = u8;
+type ModifierId = u8;
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
 const GIFT_DROPCHANCE: &str = "- **`Handful of Leaves`**: Grants 20 Leaves upon selling (5%)
@@ -90,55 +95,69 @@ enum Modifier {
     Legendary,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Copy, Debug, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
 enum BaseItem {
+    #[strum(to_string = "Handful of Leaves")]
     LeafHandful,
+    #[strum(to_string = "Pile of Leaves")]
     LeafPile,
+    #[strum(to_string = "Bucket of Leaves")]
     LeafBucket,
+    #[strum(to_string = "Barrel of Leaves")]
     LeafBarrel,
+    #[strum(to_string = "Truckload of Leaves")]
     LeafTruckload,
+    #[strum(to_string = "Tank Top")]
     TankTop,
+    #[strum(to_string = "T-Shirt")]
     Tshirt,
     Sneaker,
     Shorts,
+    #[strum(to_string = "Baseball Cap")]
     BaseballCap,
+    #[strum(to_string = "Propeller Hat")]
     PropellerHat,
     Sweater,
     Hoodie,
     Jacket,
     Coat,
+    #[strum(to_string = "Latex Glove")]
     LatexGlove,
+    #[strum(to_string = "Cotton Glove")]
     CottonGlove,
+    #[strum(to_string = "Leather Glove")]
     LeatherGlove,
+    #[strum(to_string = "Arm Sleeve")]
     ArmSleeve,
+    #[strum(to_string = "Leg Sleeve")]
     LegSleeve,
+    #[strum(to_string = "Paper Knife")]
     PaperKnife,
+    #[strum(to_string = "Tree Stick")]
     TreeStick,
+    #[strum(to_string = "Brass Knuckles")]
     BrassKnuckles,
+    #[strum(to_string = "Spiked Brass Knuckles")]
     SpikedBrassKnuckles,
+    #[strum(to_string = "Bladed Brass Knuckles")]
     BladedBrassKnuckles,
     Orangeberries,
+    #[strum(to_string = "Pen Pineapple Apple Pen")]
     PenPineappleApplePen,
+    #[strum(to_string = "Health Potion")]
     HealthPotion,
+    #[strum(to_string = "Instant Ramen")]
     InstantRamen,
     Ramen,
+    #[strum(to_string = "Carolina Reaper Ramen")]
     CarolinaReaperRamen,
     Milk,
+    #[strum(to_string = "Fried Snow")]
     FriedSnow,
+    Scarf,
 }
 
 impl BaseItem {
-    fn from(id: i32) -> Option<Self> {
-        match id {
-            v if v == LeafHandful as i32 => Some(LeafHandful),
-            v if v == LeafPile as i32 => Some(LeafPile),
-            v if v == LeafBucket as i32 => Some(LeafBucket),
-            v if v == LeafBarrel as i32 => Some(LeafBarrel),
-            v if v == LeafTruckload as i32 => Some(LeafTruckload),
-            _ => None,
-        }
-    }
-
     fn description(&self) -> &'static str {
         match self {
             LeafHandful => "It's a handful of leaves! Mind if I take some?",
@@ -178,6 +197,7 @@ impl BaseItem {
             CarolinaReaperRamen => "You have a death wish if you want to eat this abomination.",
             Milk => "Dad went to get milk, but never came back. Did you see him on the way?",
             FriedSnow => "It's got too much sentimental value to be eaten... or does it?",
+            Scarf => "Scarfing down a snowman?",
         }
     }
 
@@ -216,6 +236,7 @@ impl BaseItem {
             CarolinaReaperRamen => 666,
             Milk => 250,
             FriedSnow => 99999,
+            Scarf => 40,
         }
     }
 
@@ -254,6 +275,7 @@ impl BaseItem {
             CarolinaReaperRamen => 444,
             Milk => 200,
             FriedSnow => -99999,
+            Scarf => 15,
         }
     }
 
@@ -274,11 +296,12 @@ impl BaseItem {
             LatexGlove | CottonGlove | LeatherGlove => vec![LeftHand, RightHand],
             ArmSleeve => vec![LeftLowerArm, RightLowerArm],
             LegSleeve => vec![LeftLowerLeg, RightLowerLeg],
+            Scarf => vec![Neck],
             _ => vec![],
         }
     }
 
-    fn equipments() -> [Self; 15] {
+    fn equipments() -> [Self; 16] {
         [
             TankTop,
             Tshirt,
@@ -295,6 +318,7 @@ impl BaseItem {
             LeatherGlove,
             ArmSleeve,
             LegSleeve,
+            Scarf,
         ]
     }
 
@@ -321,7 +345,7 @@ impl BaseItem {
         ]
     }
 
-    fn weight(&self) -> u8 {
+    fn weight(&self) -> u32 {
         match self {
             TankTop => 64,
             Tshirt => 64,
@@ -351,61 +375,25 @@ impl BaseItem {
             CarolinaReaperRamen => 8,
             Milk => 64,
             FriedSnow => 4,
+            Scarf => 8,
             _ => 0,
         }
     }
 }
 
-impl std::fmt::Display for BaseItem {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LeafHandful => "Handful of Leaves",
-            LeafPile => "Pile of Leaves",
-            LeafBucket => "Bucket of Leaves",
-            LeafBarrel => "Barrel of Leaves",
-            LeafTruckload => "Truckload of Leaves",
-            TankTop => "Tank Top",
-            Tshirt => "Tshirt",
-            Sneaker => "Sneaker",
-            Shorts => "Shorts",
-            BaseballCap => "Baseball Cap",
-            PropellerHat => "Propeller Hat",
-            Sweater => "Sweater",
-            Hoodie => "Hoodie",
-            Jacket => "Jacket",
-            Coat => "Coat",
-            LatexGlove => "Latex Glove",
-            CottonGlove => "Cotton Glove",
-            LeatherGlove => "Leather Glove",
-            ArmSleeve => "Arm Sleeve",
-            LegSleeve => "Leg Sleeve",
-            PaperKnife => "Paper Knife",
-            TreeStick => "Tree Stick",
-            BrassKnuckles => "Brass Knuckles",
-            SpikedBrassKnuckles => "Spiked Brass Knuckles",
-            BladedBrassKnuckles => "Bladed Brass Knuckles",
-            Orangeberries => "Orangeberries",
-            PenPineappleApplePen => "Pen Pineapple Apple Pen",
-            HealthPotion => "Health Potion",
-            InstantRamen => "Instant Ramen",
-            Ramen => "Ramen",
-            CarolinaReaperRamen => "Carolina Reaper Ramen",
-            Milk => "Milk",
-            FriedSnow => "Fried Snow",
-        }
-        .fmt(f)
-    }
-}
-
 trait ShopRep {
-    fn shop_rep(&self, start: u8) -> String;
+    fn shop_rep(&self, start: usize) -> String;
 }
 
 impl ShopRep for Vec<BaseItem> {
-    fn shop_rep(&self, start: u8) -> String {
+    fn shop_rep(&self, start: usize) -> String {
         let mut result = String::new();
         for item in self {
-            result += &format!("{start}. `{item:<24}{:>6} Leaves`\n", item.buying_price())
+            result += &format!(
+                "{start}. `{:<24}{:>6} Leaves`\n",
+                item.as_ref(),
+                item.buying_price()
+            )
         }
         result
     }
@@ -445,23 +433,18 @@ fn get_shop(seed: u64) -> (Vec<BaseItem>, Vec<BaseItem>, Vec<BaseItem>) {
     (equipments, weapons, consumables)
 }
 
+#[derive(strum::AsRefStr, strum::FromRepr)]
 enum Passive {
+    #[strum(to_string = "Lucky!")]
     Lucky,
+    #[strum(to_string = "Luck o' Clock!")]
     LuckyZero,
+    #[strum(to_string = "Unlucky...")]
     Unlucky,
 }
 
 impl Passive {
-    fn from(id: i32) -> Option<Self> {
-        match id {
-            v if v == Passive::Lucky as i32 => Some(Passive::Lucky),
-            v if v == Passive::LuckyZero as i32 => Some(Passive::LuckyZero),
-            v if v == Passive::Unlucky as i32 => Some(Passive::Unlucky),
-            _ => None,
-        }
-    }
-
-    fn as_desc(&self) -> &'static str {
+    fn description(&self) -> &'static str {
         match self {
             Passive::Lucky => "+10% to maximum possible Leaves received from raking (1 hour)",
             Passive::LuckyZero => "+10% chance to 10x Leaves received from raking (3 hours)",
@@ -484,17 +467,6 @@ impl Passive {
             Passive::LuckyZero => (0., 0., 10., 0.1),
             Passive::Unlucky => (-0.1, 0., 0., 1.),
         }
-    }
-}
-
-impl std::fmt::Display for Passive {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Passive::Lucky => "Lucky!",
-            Passive::LuckyZero => "Luck o' Clock!",
-            Passive::Unlucky => "Unlucky...",
-        }
-        .fmt(f)
     }
 }
 
@@ -569,7 +541,7 @@ async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
     result
 }
 
-async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
+async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(PassiveId, i64)> {
     sqlx::query_as(&format!(
         "SELECT passive_id, expires_at FROM passive WHERE user_id = {user_id} AND expires_at > {time}"
     ))
@@ -578,7 +550,24 @@ async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(i32, i
     .unwrap()
 }
 
-async fn get_item(user_id: i64, pool: &SqlitePool) -> Vec<(i32, i32)> {
+async fn get_item(
+    user_id: i64,
+    item_id: ItemId,
+    quality: QualityId,
+    modifier: ModifierId,
+    pool: &SqlitePool,
+) -> Option<u32> {
+    let quantity = sqlx::query_as(&format!(
+        "SELECT quantity FROM item WHERE user_id = {user_id} AND item_id = {item_id} AND quality = {quality} AND modifier = {modifier}"
+    ))
+    .fetch_one(pool)
+    .await
+    .ok()
+    .map(|(q,)| q);
+    quantity
+}
+
+async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(ItemId, u32)> {
     sqlx::query_as(&format!(
         "SELECT item_id, quantity FROM item WHERE user_id = {user_id}"
     ))
@@ -630,7 +619,7 @@ async fn update_raking(
 }
 
 async fn add_item(user_id: i64, item: Item, pool: &SqlitePool) {
-    let item_id = item.base as i32;
+    let item_id = item.base as ItemId;
     sqlx::query(&format!(
         "INSERT OR IGNORE INTO item (user_id, item_id, quantity) VALUES ({user_id}, {item_id}, 0)",
     ))
@@ -709,7 +698,7 @@ async fn raking(
             .await
             .iter()
             .filter_map(|(passive_id, _)| {
-                Passive::from(*passive_id).and_then(|p| {
+                Passive::from_repr(*passive_id as usize).and_then(|p| {
                     let (min, max, mult, chance) = p.modifiers();
                     if random_bool(chance) {
                         Some((p, min, max, mult))
@@ -721,7 +710,7 @@ async fn raking(
             .fold(
                 (String::new(), 1., 1., 1.),
                 |(names, a, b, c), (name, x, y, z)| {
-                    (names + "\n- " + &name.to_string(), a + x, b + y, c + z)
+                    (names + "\n- " + name.as_ref(), a + x, b + y, c + z)
                 },
             );
     let mut leaves = (random_range((leaves_start * min).round()..(leaves_end * max).round()) * mult)
@@ -743,7 +732,7 @@ async fn raking(
         } else {
             Passive::Unlucky
         };
-        embed = embed.field(passive.to_string(), passive.as_desc(), false);
+        embed = embed.field(passive.as_ref(), passive.as_ref(), false);
         add_passive(user_id, time + passive.duration(), passive, get_pool!(ctx)).await;
     }
     update_raking(user_id, exp, leaves, field, time, get_pool!(ctx)).await;
@@ -757,7 +746,10 @@ async fn raking(
     } {
         embed = embed.field(
             "Bonus",
-            format!("You also found a `{item}`!\n*It is now in your inventory.*",),
+            format!(
+                "You also found a `{}`!\n*It is now in your inventory.*",
+                item.as_ref()
+            ),
             true,
         );
         add_item(user_id, Item::from_base(item), get_pool!(ctx)).await;
@@ -769,9 +761,9 @@ async fn get_lb_string(ctx: &Context, server_ids: Vec<u64>) -> String {
     let mut top10 = String::new();
     for (id, exp) in get_lb(get_pool!(ctx), server_ids, Some(10)).await {
         top10 += &if let Ok(user) = UserId::new(id).to_user(&ctx).await {
-            format!("1. `{:<20}{exp:>8} exp`\n", user.name)
+            format!("1. `{:<24}{exp:>8} exp`\n", user.name)
         } else {
-            format!("1. `{:<20}{exp:>8} exp`\n", "???")
+            format!("1. `{:<24}{exp:>8} exp`\n", "???")
         }
     }
     top10
@@ -858,11 +850,15 @@ async fn handle_owner_commands(
                         if let Ok(user_id) = receiver_id.parse()
                             && let Ok(item) = item_id.parse()
                             && let Ok(user) = UserId::new(user_id).to_user(&ctx).await
-                            && let Some(base) = BaseItem::from(item)
+                            && let Some(base) = BaseItem::from_repr(item)
                         {
                             let embed = CreateEmbed::new()
                                 .title("Item Granted")
-                                .description(format!("{} has received `{base}`.", user.name))
+                                .description(format!(
+                                    "{} has received `{}`.",
+                                    user.name,
+                                    base.as_ref()
+                                ))
                                 .color(DARK_GREEN);
                             add_item(user_id as i64, Item::from_base(base), get_pool!(ctx)).await;
                             embed
@@ -884,14 +880,15 @@ async fn handle_owner_commands(
                             && let Ok(passive) = passive_id.parse()
                             && let Ok(duration) = seconds.parse::<i64>()
                             && let Ok(user) = UserId::new(user_id).to_user(&ctx).await
-                            && let Some(passive) = Passive::from(passive)
+                            && let Some(passive) = Passive::from_repr(passive)
                         {
                             let expires_at = timestamp + duration;
                             let embed = CreateEmbed::new()
                                 .title("Passive Granted")
                                 .description(format!(
-                                    "Inflicted {} with `{passive}` until <t:{expires_at}:R>.",
-                                    user.name
+                                    "Inflicted {} with `{}` until <t:{expires_at}:R>.",
+                                    user.name,
+                                    passive.as_ref()
                                 ))
                                 .color(DARK_GREEN);
                             add_passive(user_id as i64, expires_at, passive, get_pool!(ctx)).await;
@@ -988,6 +985,34 @@ impl EventHandler for Handler {
                     .color(DARK_GREEN)
                     .field("Answer", *RESPONSES.choice(input), true)),
                 "speak" => builder.content(input).allowed_mentions(CreateAllowedMentions::new()),
+                "info" => {
+                    if let Ok(item) = BaseItem::from_str(input) {
+                        let quantity = if item.equipable_limbs().is_empty() {
+                            // can't have quality and modifier, default to 0
+                            get_item(user_id, item as u32, 0, 0, get_pool!(ctx)).await
+                        } else {
+                            // TODO: change 0 when functionality is added to quality and modifier
+                            get_item(user_id, item as u32, 0, 0, get_pool!(ctx)).await
+                        };
+                        if let Some(n) = quantity {
+                            builder.embed(CreateEmbed::new()
+                                .title(format!("You Own {n} of {input}"))
+                                .description(item.description())
+                                .color(DARK_GREEN))
+                        } else {
+                            builder.embed(CreateEmbed::new()
+                                .title(format!("You don't own the item `{input}`."))
+                                .description("Tough luck.")
+                                .color(DARK_RED))
+                        }
+                    } else {
+                        builder.embed(CreateEmbed::new()
+                            .title(format!("`{input}` is not a valid item."))
+                            .description("Did you capitalize the name?")
+                            .field("Example", "`oi info T-Shirt`", true)
+                            .color(DARK_RED))
+                    }
+                }
                 // Bot owner exclusive command
                 "gaia" => {
                     builder.embed(handle_owner_commands(&ctx, user_id, msg.timestamp.timestamp(), input).await)
@@ -1034,9 +1059,9 @@ impl EventHandler for Handler {
                 }
                 "inventory" | "inv" => builder.embed(CreateEmbed::new()
                     .title("Your Inventory")
-                    .description(get_item(user_id, get_pool!(ctx)).await
+                    .description(get_items(user_id, get_pool!(ctx)).await
                         .into_iter().map(|(item_id, quantity)|
-                            format!("{quantity} of {}", BaseItem::from(item_id).unwrap()))
+                            format!("{quantity} of {}", BaseItem::from_repr(item_id as usize).unwrap().as_ref()))
                         .collect::<Vec<_>>().join("\n")
                         + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
                     .color(DARK_GREEN)),
@@ -1046,8 +1071,8 @@ impl EventHandler for Handler {
                     .title(format!("You currently have {} passives", passives.len()))
                     .fields(passives
                         .into_iter().map(|(passive_id, time)| {
-                            let p = Passive::from(passive_id).unwrap();
-                            (format!("{p} (expires <t:{time}:R>)"), p.as_desc(), false)
+                            let p = Passive::from_repr(passive_id as usize).unwrap();
+                            (format!("{} (expires <t:{time}:R>)", p.as_ref()), p.description(), false)
                         }))
                     .color(DARK_GREEN))
                 }
@@ -1060,7 +1085,7 @@ impl EventHandler for Handler {
                         .description(equipments.shop_rep(1))
                         .field("Weapons on sale", weapons.shop_rep(5), false)
                         .field("Consumables on sale", consumables.shop_rep(7), false)
-                        .field("Info", format!("`Your Leaves: {leaves}`\nShop refreshes <t:{refresh_time}:R>."), false)
+                        .field("Info", format!("Shop refreshes <t:{refresh_time}:R>.\n`Your Leaves: {leaves}`"), false)
                         .color(DARK_GREEN))
                 }
                 "leaderboard" | "lb" => {
