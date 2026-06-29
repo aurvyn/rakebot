@@ -4,14 +4,14 @@ use serenity::{
     all::{
         Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
         EventHandler, GatewayIntents, Message, Ready, Timestamp, UserId,
-        colours::roles::{DARK_GREEN, DARK_RED},
+        colours::css::{DANGER, POSITIVE, WARNING},
     },
     async_trait,
     futures::StreamExt,
     prelude::TypeMapKey,
 };
 use sqlx::SqlitePool;
-use std::{env, fs::File, str::FromStr};
+use std::{cmp::min, env, fs::File, str::FromStr};
 
 type ItemId = u32;
 type PassiveId = u32;
@@ -46,6 +46,7 @@ const RESPONSES: &[&str] = &[
     "Definitely!",
     "Nahhh",
 ];
+const QUALITY: &[&str] = &["🌑", "🌘", "🌗", "🌖", "🌕"];
 
 macro_rules! get_pool {
     ($ctx:expr) => {
@@ -83,10 +84,11 @@ enum Limb {
     RightFoot,
 }
 
+#[derive(Clone, Copy, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
 enum Modifier {
+    Normal,
     Lousy,
     Dull,
-    Normal,
     Light,
     Heavy,
     Bulky,
@@ -95,7 +97,7 @@ enum Modifier {
     Legendary,
 }
 
-#[derive(Clone, Copy, Debug, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
+#[derive(Clone, Copy, PartialEq, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
 enum BaseItem {
     #[strum(to_string = "Handful of Leaves")]
     LeafHandful,
@@ -322,6 +324,10 @@ impl BaseItem {
         ]
     }
 
+    fn is_equipment(&self) -> bool {
+        Self::equipments().contains(self)
+    }
+
     fn weapons() -> [Self; 5] {
         [
             PaperKnife,
@@ -401,21 +407,74 @@ impl ShopRep for Vec<BaseItem> {
 
 struct Item {
     base: BaseItem,
-    quality: Option<u8>, // up to 25
-    modifier: Option<Modifier>,
+    quality: QualityId, // up to 20
+    modifier: Modifier,
 }
 
 impl Item {
     fn from_base(base: BaseItem) -> Self {
         Item {
             base,
-            quality: None,
-            modifier: None,
+            quality: 0,
+            modifier: Modifier::Normal,
+        }
+    }
+
+    /// Format: `[modifier] <item> [quality]`
+    fn from_str(s: &str) -> Option<Self> {
+        Some(if let Some((modifier, inner)) = s.split_once(" ") {
+            if let Some((item, quality)) = inner.rsplit_once(" ") {
+                Self {
+                    base: BaseItem::from_str(item).ok()?,
+                    quality: quality.parse().ok()?,
+                    modifier: Modifier::from_str(modifier).ok()?,
+                }
+            } else {
+                // possibly no quality specified, assume 0
+                Self {
+                    base: BaseItem::from_str(inner).ok()?,
+                    quality: 0,
+                    modifier: Modifier::from_str(modifier).ok()?,
+                }
+            }
+        } else {
+            // possibly no modifier specified, assume normal
+            Self::from_base(BaseItem::from_str(s).ok()?)
+        })
+    }
+
+    fn full_name(&self) -> String {
+        format!("{} {}", self.modifier.as_ref(), self.base.as_ref())
+    }
+
+    /// To be only used with equipments.
+    /// Check if they are equipments with [`BaseItem::is_equipment`].
+    fn with_quality(&self, quantity: u32) -> String {
+        let mut quality = String::from("- ");
+        for i in 0..4 {
+            quality.push_str(
+                QUALITY
+                    .get(min(self.quality.saturating_sub(i * 5), 4) as usize)
+                    .unwrap(),
+            );
+        }
+        format!("{} {quality}", self.with_quantity(quantity))
+    }
+
+    fn with_quantity(&self, quantity: u32) -> String {
+        format!("`{:<40}`", format!("{quantity} of {}", self.full_name()))
+    }
+
+    /// Prints out the formatted representation with
+    /// quantity, modifier, and quality.
+    fn as_owned(&self, quantity: u32) -> String {
+        if self.base.is_equipment() {
+            self.with_quality(quantity)
+        } else {
+            self.with_quantity(quantity)
         }
     }
 }
-
-type Shop = Vec<Item>;
 
 fn sample_items(rng: &mut StdRng, amount: usize, items: &[BaseItem]) -> Vec<BaseItem> {
     items
@@ -550,6 +609,7 @@ async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(Passiv
     .unwrap()
 }
 
+/// Returns the amount that the user owns.
 async fn get_item(
     user_id: i64,
     item_id: ItemId,
@@ -567,13 +627,27 @@ async fn get_item(
     quantity
 }
 
-async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(ItemId, u32)> {
+async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(Item, u32)> {
     sqlx::query_as(&format!(
-        "SELECT item_id, quantity FROM item WHERE user_id = {user_id}"
+        "SELECT item_id, quantity, quality, modifier FROM item WHERE user_id = {user_id}"
     ))
     .fetch_all(pool)
     .await
     .unwrap()
+    .iter()
+    .map(|(item_id, quantity, quality, modifier)| {
+        let item_id: ItemId = *item_id;
+        let modifier_id: ModifierId = *modifier;
+        (
+            Item {
+                base: BaseItem::from_repr(item_id as usize).unwrap(),
+                quality: *quality,
+                modifier: Modifier::from_repr(modifier_id as usize).unwrap(),
+            },
+            *quantity,
+        )
+    })
+    .collect()
 }
 
 async fn get_lb(pool: &SqlitePool, server_ids: Vec<u64>, limit: Option<u8>) -> Vec<(u64, i64)> {
@@ -718,7 +792,7 @@ async fn raking(
     let mut embed = CreateEmbed::new()
         .title(format!("{remark} with `bare hands`.")) // change later
         .description(format!("`{exp:+} exp`\n`{leaves:+} Leaves`"))
-        .color(DARK_GREEN);
+        .color(POSITIVE);
     if !passives.is_empty() {
         embed = embed.field("Passives", passives, false)
     }
@@ -790,7 +864,7 @@ fn handle_help(input: &str) -> CreateEmbed {
         "rake" | "r" => CreateEmbed::new()
             .title("`rake` (alias: `r`)")
             .description("The basic command to rake and obtain Leaves.")
-            .color(DARK_GREEN)
+            .color(POSITIVE)
             .field("Details", "**exp**:\n`5`-`10`\n\
                 **Leaves**:\n`(1 + 0.1 * <strength>)`-`(4 + 0.5 * <rake size> * <rake efficiency>)`\n\
                 **cooldown**:\n`(30 + <rake size>)` seconds", false)
@@ -798,7 +872,7 @@ fn handle_help(input: &str) -> CreateEmbed {
         "riskyRake" | "rr" => CreateEmbed::new()
             .title("`riskyRake` (alias: `rr`)")
             .description("The risky version of raking to obtain or lose Leaves.")
-            .color(DARK_GREEN)
+            .color(POSITIVE)
             .field("Details", "**exp**:\n`-10`-`40`\n\
                 **Leaves**:\n`(-6 + 0.2 * <strength>)`-`(16 + <rake size> * <rake efficiency>)`\n\
                 **cooldown**:\n`(60 + 2 * <rake size>)` seconds", false)
@@ -806,7 +880,7 @@ fn handle_help(input: &str) -> CreateEmbed {
         _ => CreateEmbed::new()
             .title(format!("What's `{input}`?"))
             .description("I don't have that command, try `oi help` to see available commands.")
-            .color(DARK_RED)
+            .color(DANGER)
     }
 }
 
@@ -814,7 +888,7 @@ fn handle_owner_help() -> CreateEmbed {
     CreateEmbed::new()
         .title("Gaia Commands")
         .description("Codename Gaia. Heed commands from her director.")
-        .color(DARK_GREEN)
+        .color(POSITIVE)
         .fields(vec![
             (
                 "`give`",
@@ -859,20 +933,20 @@ async fn handle_owner_commands(
                                     user.name,
                                     base.as_ref()
                                 ))
-                                .color(DARK_GREEN);
+                                .color(POSITIVE);
                             add_item(user_id as i64, Item::from_base(base), get_pool!(ctx)).await;
                             embed
                         } else {
                             CreateEmbed::new()
                                 .title("Gaia is Confused by Your Demands")
                                 .description("She does not recognize the user ID or item ID.")
-                                .color(DARK_RED)
+                                .color(DANGER)
                         }
                     }
                     _ => CreateEmbed::new()
                         .title("Gaia is Confused by Your Demands")
                         .description("She does not sense an item ID.")
-                        .color(DARK_GREEN),
+                        .color(POSITIVE),
                 },
                 "apply" => match args.splitn(3, " ").collect::<Vec<_>>()[..] {
                     [receiver_id, passive_id, seconds] => {
@@ -890,20 +964,20 @@ async fn handle_owner_commands(
                                     user.name,
                                     passive.as_ref()
                                 ))
-                                .color(DARK_GREEN);
+                                .color(POSITIVE);
                             add_passive(user_id as i64, expires_at, passive, get_pool!(ctx)).await;
                             embed
                         } else {
                             CreateEmbed::new()
                                 .title("Gaia is Confused by Your Demands")
                                 .description("She does not recognize the user/passive ID or time.")
-                                .color(DARK_RED)
+                                .color(DANGER)
                         }
                     }
                     _ => CreateEmbed::new()
                         .title("Gaia is Confused by Your Demands")
                         .description("She does not sense user/passive ID or time.")
-                        .color(DARK_RED),
+                        .color(DANGER),
                 },
                 "bless" => match args.splitn(3, " ").collect::<Vec<_>>()[..] {
                     [receiver_id, xp, amount] => {
@@ -927,37 +1001,37 @@ async fn handle_owner_commands(
                                     "{} has received `{exp} exp` and `{leaves} Leaves`.",
                                     user.name
                                 ))
-                                .color(DARK_GREEN)
+                                .color(POSITIVE)
                         } else {
                             CreateEmbed::new()
                                 .title("Gaia is Confused by Your Demands")
                                 .description("She does not recognize the user ID or exp/Leaves.")
-                                .color(DARK_RED)
+                                .color(DANGER)
                         }
                     }
                     _ => CreateEmbed::new()
                         .title("Gaia is Confused by Your Demands")
                         .description("She does not sense user ID or exp/Leaves amount.")
-                        .color(DARK_RED),
+                        .color(DANGER),
                 },
                 _ => CreateEmbed::new()
                     .title("Gaia is Confused by Your Command")
                     .description(format!("She does not recognize `{command}`."))
-                    .color(DARK_RED),
+                    .color(DANGER),
             },
             None => match input {
                 "help" => handle_owner_help(),
                 _ => CreateEmbed::new()
                     .title("Gaia is Confused by Your Command")
                     .description(format!("She does not recognize `{input}`."))
-                    .color(DARK_RED),
+                    .color(DANGER),
             },
         }
     } else {
         CreateEmbed::new()
             .title("Access Denied")
             .description("You do not have the permissions for this command.")
-            .color(DARK_RED)
+            .color(DANGER)
     }
 }
 
@@ -982,7 +1056,7 @@ impl EventHandler for Handler {
                 "say" | "say," => builder.embed(CreateEmbed::new()
                     .title("Question")
                     .description(input)
-                    .color(DARK_GREEN)
+                    .color(POSITIVE)
                     .field("Answer", *RESPONSES.choice(input), true)),
                 "speak" => builder.content(input).allowed_mentions(CreateAllowedMentions::new()),
                 "info" => {
@@ -998,19 +1072,36 @@ impl EventHandler for Handler {
                             builder.embed(CreateEmbed::new()
                                 .title(format!("You Own {n} of {input}"))
                                 .description(item.description())
-                                .color(DARK_GREEN))
+                                .color(POSITIVE))
                         } else {
                             builder.embed(CreateEmbed::new()
                                 .title(format!("You don't own the item `{input}`."))
                                 .description("Tough luck.")
-                                .color(DARK_RED))
+                                .color(DANGER))
                         }
                     } else {
                         builder.embed(CreateEmbed::new()
                             .title(format!("`{input}` is not a valid item."))
                             .description("Did you capitalize the name?")
                             .field("Example", "`oi info T-Shirt`", true)
-                            .color(DARK_RED))
+                            .color(DANGER))
+                    }
+                }
+                "sell" => {
+                    if let Some(item) = Item::from_str(input) {
+                        let amount = get_item(user_id, item.base as u32, 0, 0, get_pool!(ctx)).await.unwrap();
+                        builder.embed(CreateEmbed::new()
+                            .title(format!("Are you sure that you want to sell {amount} of `{}`?", item.base.as_ref()))
+                            .fields([
+                                ("Original Price", format!("{} Leaves", item.base.buying_price()), true),
+                                ("Selling Price", format!("{} Leaves", item.base.selling_price()), true)
+                            ])
+                            .color(WARNING))
+                    } else {
+                        builder.embed(CreateEmbed::new()
+                            .title(format!("You don't own the item `{input}`."))
+                            .description("Did you capitalize the item name?")
+                            .color(DANGER))
                     }
                 }
                 // Bot owner exclusive command
@@ -1020,13 +1111,13 @@ impl EventHandler for Handler {
                 _ => builder.embed(CreateEmbed::new()
                     .title(format!("What's `{command}`?"))
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
-                    .color(DARK_RED))
+                    .color(DANGER))
             }
             None => match content {
                 "help" => builder.embed(CreateEmbed::new()
                     .title("Commands")
                     .description("[Join our official server!](https://discord.gg/fwNnyndEM2)")
-                    .color(DARK_GREEN)
+                    .color(POSITIVE)
                     .thumbnail(ICON_URL)
                     .fields(vec![
                         ("Raking", "`rake (r)`, `riskyRake (rr)`, `daily`, `rank`, `passives`, \
@@ -1040,13 +1131,13 @@ impl EventHandler for Handler {
                     .footer(CreateEmbedFooter::new("yee haw").icon_url(ICON_URL))),
                 "ping" => builder.embed(CreateEmbed::new()
                     .title("🏓 Pong!")
-                    .color(DARK_GREEN)
+                    .color(POSITIVE)
                     .timestamp(Timestamp::now())),
                 "invite" => builder.embed(CreateEmbed::new()
                     .title("Invite me to your server!")
                     .description("[Click this if you're an epic gamer or something idk]\
                         (https://discord.com/api/oauth2/authorize?client_id=767768980043333642&permissions=3435841&scope=bot)")
-                    .color(DARK_GREEN)
+                    .color(POSITIVE)
                     .thumbnail("https://cdn.discordapp.com/avatars/767768980043333642/75c9a79a0aad1157fa8645061601961e.png")),
                 "rake" | "r" => {
                     raking(&ctx, &msg, builder, RakeType::Normal).await
@@ -1059,12 +1150,14 @@ impl EventHandler for Handler {
                 }
                 "inventory" | "inv" => builder.embed(CreateEmbed::new()
                     .title("Your Inventory")
-                    .description(get_items(user_id, get_pool!(ctx)).await
-                        .into_iter().map(|(item_id, quantity)|
-                            format!("{quantity} of {}", BaseItem::from_repr(item_id as usize).unwrap().as_ref()))
+                    .description(get_items(user_id, get_pool!(ctx))
+                        .await
+                        .into_iter()
+                        .map(|(item, quantity)| item.as_owned(quantity))
                         .collect::<Vec<_>>().join("\n")
-                        + &format!("\n\n`Your Leaves: {}`", get_from_user("leaves", user_id, get_pool!(ctx)).await))
-                    .color(DARK_GREEN)),
+                        + &format!("\n\nYour Leaves: {}", get_from_user("leaves", user_id, get_pool!(ctx)).await)
+                    )
+                    .color(POSITIVE)),
                 "passives" => {
                     let passives = get_passives(user_id, msg.timestamp.timestamp(), get_pool!(ctx)).await;
                     builder.embed(CreateEmbed::new()
@@ -1074,7 +1167,7 @@ impl EventHandler for Handler {
                             let p = Passive::from_repr(passive_id as usize).unwrap();
                             (format!("{} (expires <t:{time}:R>)", p.as_ref()), p.description(), false)
                         }))
-                    .color(DARK_GREEN))
+                    .color(POSITIVE))
                 }
                 "shop" => {
                     let refresh_time = (msg.timestamp.timestamp() as u64 / 86400 + 1) * 86400;
@@ -1085,8 +1178,8 @@ impl EventHandler for Handler {
                         .description(equipments.shop_rep(1))
                         .field("Weapons on sale", weapons.shop_rep(5), false)
                         .field("Consumables on sale", consumables.shop_rep(7), false)
-                        .field("Info", format!("Shop refreshes <t:{refresh_time}:R>.\n`Your Leaves: {leaves}`"), false)
-                        .color(DARK_GREEN))
+                        .field("Info", format!("Shop refreshes <t:{refresh_time}:R>.\nYour Leaves: {leaves}"), false)
+                        .color(POSITIVE))
                 }
                 "leaderboard" | "lb" => {
                     let loading_msg = msg.channel_id.send_message(&ctx.http,
@@ -1096,7 +1189,7 @@ impl EventHandler for Handler {
                     let mut embed = CreateEmbed::new()
                         .title("Global Leaderboard")
                         .description(top10global)
-                        .color(DARK_GREEN);
+                        .color(POSITIVE);
                     let mut server_ids = vec![];
                     if let Some(guild_id) = msg.guild_id {
                         let mut members = guild_id.members_iter(&ctx).boxed();
@@ -1114,7 +1207,7 @@ impl EventHandler for Handler {
                 _ => builder.embed(CreateEmbed::new()
                     .title(format!("What's `{content}`?"))
                     .description("I can't quite understand what you're saying, maybe try `oi help`?")
-                    .color(DARK_RED))
+                    .color(DANGER))
             }
         };
         if let Err(why) = msg.channel_id.send_message(&ctx.http, builder).await {
