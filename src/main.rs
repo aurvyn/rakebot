@@ -2,8 +2,9 @@ use crate::{BaseItem::*, Limb::*};
 use rand::{SeedableRng, random_bool, random_range, rngs::StdRng, seq::IndexedRandom};
 use serenity::{
     all::{
-        Client, Context, CreateAllowedMentions, CreateEmbed, CreateEmbedFooter, CreateMessage,
-        EventHandler, GatewayIntents, Message, Ready, Timestamp, UserId,
+        Client, Context, CreateAllowedMentions, CreateButton, CreateEmbed, CreateEmbedFooter,
+        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
+        GatewayIntents, Interaction, Message, Ready, Timestamp, UserId,
         colours::css::{DANGER, POSITIVE, WARNING},
     },
     async_trait,
@@ -47,6 +48,7 @@ const RESPONSES: &[&str] = &[
     "Nahhh",
 ];
 const QUALITY: &[&str] = &["🌑", "🌘", "🌗", "🌖", "🌕"];
+const SELL_CONFIRM: &str = "sell-confirm";
 
 macro_rules! get_pool {
     ($ctx:expr) => {
@@ -84,7 +86,7 @@ enum Limb {
     RightFoot,
 }
 
-#[derive(Clone, Copy, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
+#[derive(Clone, Copy, PartialEq, strum::AsRefStr, strum::EnumString, strum::FromRepr)]
 enum Modifier {
     Normal,
     Lousy,
@@ -443,8 +445,13 @@ impl Item {
         })
     }
 
+    /// Shows modifier and item name.
     fn full_name(&self) -> String {
-        format!("{} {}", self.modifier.as_ref(), self.base.as_ref())
+        if self.modifier == Modifier::Normal {
+            self.base.as_ref().to_string()
+        } else {
+            format!("{} {}", self.modifier.as_ref(), self.base.as_ref())
+        }
     }
 
     /// To be only used with equipments.
@@ -1097,6 +1104,7 @@ impl EventHandler for Handler {
                                 ("Selling Price", format!("{} Leaves", item.base.selling_price()), true)
                             ])
                             .color(WARNING))
+                            .button(CreateButton::new(SELL_CONFIRM))
                     } else {
                         builder.embed(CreateEmbed::new()
                             .title(format!("You don't own the item `{input}`."))
@@ -1212,6 +1220,23 @@ impl EventHandler for Handler {
         };
         if let Err(why) = msg.channel_id.send_message(&ctx.http, builder).await {
             println!("Error sending message: {why:?}");
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        if let Interaction::Component(component) = interaction {
+            match component.data.custom_id.as_str() {
+                SELL_CONFIRM => {
+                    let response_message =
+                        CreateInteractionResponseMessage::new().content("You clicked the button!");
+                    let response = CreateInteractionResponse::UpdateMessage(response_message);
+
+                    if let Err(why) = component.create_response(&ctx.http, response).await {
+                        println!("Error responding to button click: {why:?}");
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
