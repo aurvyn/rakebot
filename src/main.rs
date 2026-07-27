@@ -1,10 +1,13 @@
-use crate::{BaseItem::*, Limb::*};
+mod queries;
+
+use crate::{BaseItem::*, Limb::*, queries::*};
 use rand::{SeedableRng, random_bool, random_range, rngs::StdRng, seq::IndexedRandom};
 use serenity::{
     all::{
-        Client, Context, CreateAllowedMentions, CreateButton, CreateEmbed, CreateEmbedFooter,
-        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
-        GatewayIntents, Interaction, Message, Ready, Timestamp, UserId,
+        ButtonStyle, Client, Context, CreateAllowedMentions, CreateButton, CreateEmbed,
+        CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage,
+        CreateMessage, EventHandler, GatewayIntents, Interaction, Message, Ready, Timestamp,
+        UserId,
         colours::css::{DANGER, POSITIVE, WARNING},
     },
     async_trait,
@@ -13,11 +16,6 @@ use serenity::{
 };
 use sqlx::SqlitePool;
 use std::{cmp::min, env, fs::File, str::FromStr};
-
-type ItemId = u32;
-type PassiveId = u32;
-type QualityId = u8;
-type ModifierId = u8;
 
 const ICON_URL: &str = "https://img.icons8.com/emoji/452/fallen-leaf.png";
 const GIFT_DROPCHANCE: &str = "- **`Handful of Leaves`**: Grants 20 Leaves upon selling (5%)
@@ -424,24 +422,25 @@ impl Item {
 
     /// Format: `[modifier] <item> [quality]`
     fn from_str(s: &str) -> Option<Self> {
-        Some(if let Some((modifier, inner)) = s.split_once(" ") {
-            if let Some((item, quality)) = inner.rsplit_once(" ") {
-                Self {
-                    base: BaseItem::from_str(item).ok()?,
-                    quality: quality.parse().ok()?,
-                    modifier: Modifier::from_str(modifier).ok()?,
-                }
+        let (modifier, item, quality) = if let Some((head, inner)) = s.split_once(" ")
+            && let Ok(modifier) = Modifier::from_str(head)
+        {
+            if let Some((item, tail)) = inner.rsplit_once(" ")
+                && let Ok(quality) = tail.parse()
+            {
+                (modifier, item, quality)
             } else {
                 // possibly no quality specified, assume 0
-                Self {
-                    base: BaseItem::from_str(inner).ok()?,
-                    quality: 0,
-                    modifier: Modifier::from_str(modifier).ok()?,
-                }
+                (modifier, inner, 0)
             }
         } else {
             // possibly no modifier specified, assume normal
-            Self::from_base(BaseItem::from_str(s).ok()?)
+            (Modifier::Normal, s, 0)
+        };
+        Some(Self {
+            base: BaseItem::from_str(item).ok()?,
+            quality,
+            modifier,
         })
     }
 
@@ -544,190 +543,6 @@ impl TypeMapKey for DbPool {
 struct OwnerId;
 impl TypeMapKey for OwnerId {
     type Value = i64;
-}
-
-async fn try_create_tables(pool: &SqlitePool) {
-    sqlx::query(
-        "
-        CREATE TABLE IF NOT EXISTS user (
-            id         INTEGER PRIMARY KEY,
-            exp        INTEGER NOT NULL DEFAULT 0,
-            leaves     INTEGER NOT NULL DEFAULT 0,
-            last_raked INTEGER NOT NULL DEFAULT 0,
-            last_daily INTEGER NOT NULL DEFAULT 0
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "
-        CREATE TABLE IF NOT EXISTS item (
-            user_id  INTEGER NOT NULL,
-            item_id  INTEGER NOT NULL,
-            quantity INTEGER NOT NULL DEFAULT 0,
-            quality  INTEGER NOT NULL DEFAULT 0,
-            modifier INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, item_id, quality, modifier),
-            FOREIGN KEY (user_id) REFERENCES user(id)
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "
-        CREATE TABLE IF NOT EXISTS passive (
-            user_id    INTEGER NOT NULL,
-            passive_id INTEGER NOT NULL,
-            expires_at INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, passive_id),
-            FOREIGN KEY (user_id) REFERENCES user(id)
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn try_register(user_id: i64, pool: &SqlitePool) {
-    sqlx::query(&format!(
-        "INSERT OR IGNORE INTO user (id) VALUES ({user_id})"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn get_from_user(field: &str, user_id: i64, pool: &SqlitePool) -> i64 {
-    let (result,) = sqlx::query_as(&format!("SELECT {field} FROM user WHERE id = {user_id}"))
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    result
-}
-
-async fn get_passives(user_id: i64, time: i64, pool: &SqlitePool) -> Vec<(PassiveId, i64)> {
-    sqlx::query_as(&format!(
-        "SELECT passive_id, expires_at FROM passive WHERE user_id = {user_id} AND expires_at > {time}"
-    ))
-    .fetch_all(pool)
-    .await
-    .unwrap()
-}
-
-/// Returns the amount that the user owns.
-async fn get_item(
-    user_id: i64,
-    item_id: ItemId,
-    quality: QualityId,
-    modifier: ModifierId,
-    pool: &SqlitePool,
-) -> Option<u32> {
-    sqlx::query_as(&format!(
-        "SELECT quantity FROM item WHERE user_id = {user_id} AND item_id = {item_id} AND quality = {quality} AND modifier = {modifier}"
-    ))
-    .fetch_one(pool)
-    .await
-    .ok()
-    .map(|(q,)| q)
-}
-
-async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(Item, u32)> {
-    sqlx::query_as(&format!(
-        "SELECT item_id, quantity, quality, modifier FROM item WHERE user_id = {user_id}"
-    ))
-    .fetch_all(pool)
-    .await
-    .unwrap()
-    .iter()
-    .map(|(item_id, quantity, quality, modifier)| {
-        let item_id: ItemId = *item_id;
-        let modifier_id: ModifierId = *modifier;
-        (
-            Item {
-                base: BaseItem::from_repr(item_id as usize).unwrap(),
-                quality: *quality,
-                modifier: Modifier::from_repr(modifier_id as usize).unwrap(),
-            },
-            *quantity,
-        )
-    })
-    .collect()
-}
-
-async fn get_lb(pool: &SqlitePool, server_ids: Vec<u64>, limit: Option<u8>) -> Vec<(u64, i64)> {
-    sqlx::query_as(&format!(
-        "SELECT id, exp FROM user {} ORDER BY exp DESC, leaves DESC {}",
-        if server_ids.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "WHERE id IN ({})",
-                server_ids
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        },
-        if let Some(lim) = limit {
-            format!("LIMIT {lim}")
-        } else {
-            String::new()
-        }
-    ))
-    .fetch_all(pool)
-    .await
-    .unwrap()
-}
-
-async fn update_raking(
-    user_id: i64,
-    exp: i32,
-    leaves: i32,
-    field: &str,
-    last_raked: i64,
-    pool: &SqlitePool,
-) {
-    sqlx::query(&format!(
-        "UPDATE user SET exp = exp + {exp}, leaves = leaves + {leaves}, {field} = {last_raked} WHERE id = {user_id}"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn add_item(user_id: i64, item: Item, pool: &SqlitePool) {
-    let item_id = item.base as ItemId;
-    sqlx::query(&format!(
-        "INSERT OR IGNORE INTO item (user_id, item_id, quantity) VALUES ({user_id}, {item_id}, 0)",
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(&format!(
-        "UPDATE item SET quantity = quantity + 1 WHERE user_id = {user_id} AND item_id = {item_id}",
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-}
-
-async fn add_passive(user_id: i64, expires_at: i64, passive: Passive, pool: &SqlitePool) {
-    let passive_id = passive as i32;
-    sqlx::query(&format!(
-        "INSERT OR IGNORE INTO passive (user_id, passive_id, expires_at) VALUES ({user_id}, {passive_id}, 0)"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query(&format!(
-        "UPDATE passive SET expires_at = {expires_at} WHERE user_id = {user_id} AND passive_id = {passive_id}"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
 }
 
 async fn raking(
@@ -1103,7 +918,7 @@ impl EventHandler for Handler {
                                 ("Selling Price", format!("{} Leaves", item.base.selling_price()), true)
                             ])
                             .color(WARNING))
-                            .button(CreateButton::new(SELL_CONFIRM))
+                            .button(CreateButton::new(SELL_CONFIRM).label("Sell").style(ButtonStyle::Success))
                     } else {
                         builder.embed(CreateEmbed::new()
                             .title(format!("You don't own the item `{input}`."))
