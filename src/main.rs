@@ -492,7 +492,7 @@ fn sample_items(rng: &mut StdRng, amount: usize, items: &[BaseItem]) -> Vec<Base
 }
 
 fn get_shop(seed: u64) -> (Vec<BaseItem>, Vec<BaseItem>, Vec<BaseItem>) {
-    let ref mut rng = StdRng::seed_from_u64(seed);
+    let rng = &mut StdRng::seed_from_u64(seed);
     let equipments = sample_items(rng, 4, &BaseItem::equipments());
     let weapons = sample_items(rng, 2, &BaseItem::weapons());
     let consumables = sample_items(rng, 3, &BaseItem::consumables());
@@ -624,14 +624,13 @@ async fn get_item(
     modifier: ModifierId,
     pool: &SqlitePool,
 ) -> Option<u32> {
-    let quantity = sqlx::query_as(&format!(
+    sqlx::query_as(&format!(
         "SELECT quantity FROM item WHERE user_id = {user_id} AND item_id = {item_id} AND quality = {quality} AND modifier = {modifier}"
     ))
     .fetch_one(pool)
     .await
     .ok()
-    .map(|(q,)| q);
-    quantity
+    .map(|(q,)| q)
 }
 
 async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(Item, u32)> {
@@ -1224,18 +1223,15 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::Component(component) = interaction {
-            match component.data.custom_id.as_str() {
-                SELL_CONFIRM => {
-                    let response_message =
-                        CreateInteractionResponseMessage::new().content("You clicked the button!");
-                    let response = CreateInteractionResponse::UpdateMessage(response_message);
+        if let Interaction::Component(component) = interaction
+            && component.data.custom_id.as_str() == SELL_CONFIRM
+        {
+            let response_message =
+                CreateInteractionResponseMessage::new().content("You clicked the button!");
+            let response = CreateInteractionResponse::UpdateMessage(response_message);
 
-                    if let Err(why) = component.create_response(&ctx.http, response).await {
-                        println!("Error responding to button click: {why:?}");
-                    }
-                }
-                _ => {}
+            if let Err(why) = component.create_response(&ctx.http, response).await {
+                println!("Error responding to button click: {why:?}");
             }
         }
     }
