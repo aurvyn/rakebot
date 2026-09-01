@@ -85,7 +85,7 @@ pub async fn get_item(
     pool: &SqlitePool,
 ) -> Option<u32> {
     sqlx::query_as(&format!(
-        "SELECT quantity FROM item WHERE user_id = {user_id} AND item_id = {item_id} AND quality = {quality} AND modifier = {modifier}"
+        "SELECT quantity FROM item WHERE user_id = {user_id} AND item_id = {item_id} AND quality = {quality} AND modifier = {modifier} AND quantity > 0"
     ))
     .fetch_one(pool)
     .await
@@ -95,7 +95,7 @@ pub async fn get_item(
 
 pub async fn get_items(user_id: i64, pool: &SqlitePool) -> Vec<(Item, u32)> {
     sqlx::query_as(&format!(
-        "SELECT item_id, quantity, quality, modifier FROM item WHERE user_id = {user_id}"
+        "SELECT item_id, quantity, quality, modifier FROM item WHERE user_id = {user_id} AND quantity > 0"
     ))
     .fetch_all(pool)
     .await
@@ -184,6 +184,23 @@ pub async fn add_passive(user_id: i64, expires_at: i64, passive: Passive, pool: 
     .unwrap();
     sqlx::query(&format!(
         "UPDATE passive SET expires_at = {expires_at} WHERE user_id = {user_id} AND passive_id = {passive_id}"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+pub async fn sell_item(user_id: i64, amount: i32, item: Item, pool: &SqlitePool) {
+    let item_id = item.base as ItemId;
+    sqlx::query(&format!(
+        "UPDATE item SET quantity = quantity - {amount} WHERE user_id = {user_id} AND item_id = {item_id}",
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "UPDATE user SET leaves = leaves + {} WHERE id = {user_id}",
+        amount * item.base.selling_price()
     ))
     .execute(pool)
     .await

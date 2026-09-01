@@ -910,18 +910,25 @@ impl EventHandler for Handler {
                 }
                 "sell" => {
                     if let Some(item) = Item::from_str(input) {
-                        let amount = get_item(user_id, item.base as u32, 0, 0, get_pool!(ctx)).await.unwrap();
-                        builder.embed(CreateEmbed::new()
-                            .title(format!("Are you sure that you want to sell {amount} of `{}`?", item.base.as_ref()))
+                        let base = item.base;
+                        if let Some(amount) = get_item(user_id, base as u32, 0, 0, get_pool!(ctx)).await {
+                            builder.embed(CreateEmbed::new()
+                            .title(format!("Are you sure that you want to sell {amount} of `{}`?", base.as_ref()))
                             .fields([
-                                ("Original Price", format!("{} Leaves", item.base.buying_price()), true),
-                                ("Selling Price", format!("{} Leaves", item.base.selling_price()), true)
+                                ("Original Price", format!("{} Leaves", base.buying_price()), true),
+                                ("Selling Price", format!("{} Leaves", base.selling_price()), true)
                             ])
                             .color(WARNING))
-                            .button(CreateButton::new(SELL_CONFIRM).label("Sell").style(ButtonStyle::Success))
+                            .button(CreateButton::new(format!("{SELL_CONFIRM}:{}:{amount}:{user_id}", base as u32)).label("Sell").style(ButtonStyle::Success))
+                        } else {
+                            builder.embed(CreateEmbed::new()
+                                .title(format!("You don't own the item `{input}`."))
+                                .description("Maybe try selling something else?")
+                                .color(DANGER))
+                        }
                     } else {
                         builder.embed(CreateEmbed::new()
-                            .title(format!("You don't own the item `{input}`."))
+                            .title(format!("What's `{input}`?"))
                             .description("Did you capitalize the item name?")
                             .color(DANGER))
                     }
@@ -1039,11 +1046,34 @@ impl EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Component(component) = interaction
-            && component.data.custom_id.as_str() == SELL_CONFIRM
+            // body == `item:amount`
+            && let Some((SELL_CONFIRM, body)) = component
+                .data
+                .custom_id
+                .as_str()
+                .split_once(':')
+            && let Some((item_id, rest)) = body
+                .split_once(':')
+                .map(|(item_id, rest)| (item_id.parse::<usize>().unwrap(), rest))
+            && let Some((amount, user_id)) = rest
+                .split_once(':')
+                .map(|(amount, user_id)| (amount.parse::<i32>().unwrap(), user_id.parse::<i64>().unwrap()))
+            && user_id as u64 == component.user.id.get()
+            && let Some(base) = BaseItem::from_repr(item_id)
         {
-            let response_message =
-                CreateInteractionResponseMessage::new().content("You clicked the button!");
-            let response = CreateInteractionResponse::UpdateMessage(response_message);
+            sell_item(user_id, amount, Item::from_base(base), get_pool!(ctx)).await;
+            let msg = CreateInteractionResponseMessage::new()
+                .embed(
+                    CreateEmbed::new()
+                        .title(format!("You sold {amount} of {}!", base.as_ref()))
+                        .description(format!(
+                            "{} Leaves are sent to your balance.",
+                            amount * base.selling_price()
+                        ))
+                        .color(POSITIVE),
+                )
+                .components(vec![]);
+            let response = CreateInteractionResponse::UpdateMessage(msg);
 
             if let Err(why) = component.create_response(&ctx.http, response).await {
                 println!("Error responding to button click: {why:?}");
